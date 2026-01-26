@@ -98,7 +98,7 @@ def generar_analisis_auto(df):
             f"- Tendencia de Polaridad: {trend} ({pos} vs {neg}).\n"
             f"- Promedio de corriente de falla: {df['Amperios'].mean():.1f} A.")
 
-# --- EXCEL PRO (CORREGIDO: FECHA SIN HORA) ---
+# --- EXCEL PRO ---
 def generar_excel_pro(df, planta, periodo, comentarios):
     output = io.BytesIO()
     if df.empty: return None
@@ -108,23 +108,18 @@ def generar_excel_pro(df, planta, periodo, comentarios):
             ws = wb.add_worksheet('Reporte Técnico')
             ws.hide_gridlines(2)
             
-            # Formatos
             f_titulo = wb.add_format({'bold': True, 'font_size': 16, 'color': 'white', 'bg_color': '#C0392B', 'align': 'center'})
             f_sub = wb.add_format({'bold': True, 'bottom': 1})
             f_texto = wb.add_format({'text_wrap': True, 'border': 1, 'valign': 'top'})
-            # Formato de fecha para Excel
             f_fecha = wb.add_format({'num_format': 'yyyy-mm-dd', 'align': 'left'})
             
-            # Encabezado
             ws.merge_range('B2:H2', f"REPORTE DE FALLAS: {planta.upper()}", f_titulo)
             ws.write('B3', f"Periodo: {periodo}")
             ws.write('E3', f"Fecha: {pd.Timestamp.now().strftime('%d-%m-%Y')}")
             
-            # Comentarios
             ws.write('B5', "ANÁLISIS TÉCNICO:", f_sub)
             ws.merge_range('B6:F10', comentarios, f_texto)
             
-            # --- DATOS PARA GRÁFICO ---
             df_chart = df['Inversor'].value_counts().reset_index()
             df_chart.columns = ['Inversor', 'Cantidad']
             df_chart.to_excel(writer, sheet_name='Reporte Técnico', startrow=5, startcol=10, index=False)
@@ -140,18 +135,12 @@ def generar_excel_pro(df, planta, periodo, comentarios):
             chart.set_style(10)
             ws.insert_chart('G6', chart, {'x_scale': 0.9, 'y_scale': 0.9})
 
-            # --- TABLA DE DATOS PRINCIPAL ---
             ws.write('B13', "DETALLE DE EVENTOS:", f_sub)
-            
-            # Preparamos el DF para exportar (Quitamos la hora)
             df_export = df[['Fecha', 'ID_Tecnico', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota']].copy()
-            # Convertimos a objeto date (sin hora)
             df_export['Fecha'] = df_export['Fecha'].dt.date
-            
             df_export.to_excel(writer, sheet_name='Reporte Técnico', startrow=13, startcol=1, index=False)
             
-            # Ajustar anchos y formato
-            ws.set_column('B:B', 12, f_fecha) # Columna Fecha con formato limpio
+            ws.set_column('B:B', 12, f_fecha)
             ws.set_column('C:C', 15)
             ws.set_column('H:H', 30)
             
@@ -189,7 +178,6 @@ with st.sidebar:
 
 tab1, tab2 = st.tabs(["📝 Ingreso", "📊 Estadísticas & Informe"])
 
-# --- TAB 1: INGRESO ---
 with tab1:
     st.subheader(f"Registro: {planta_sel}")
     with st.form("form_ingreso"):
@@ -232,7 +220,6 @@ with tab1:
                 if row['Nota']: cols[4].caption(row['Nota'])
                 if cols[5].button("🗑️", key=f"del_{i}"): borrar_registro_google(i); st.rerun()
 
-# --- TAB 2: ESTADISTICAS ---
 with tab2:
     df = st.session_state.df_cache
     if not df.empty:
@@ -256,44 +243,43 @@ with tab2:
         top = df_f['Equipo'].mode()
         k3.metric("Equipo Crítico", top[0] if not top.empty else "-")
 
-        # GRÁFICOS (3 COLUMNAS)
+        # GRÁFICOS (3 COLUMNAS IGUALES PARA SIMETRÍA)
         st.divider()
-        # [2, 1, 1] significa: La primera col es el doble de ancha que las otras dos
-        col_g1, col_g2, col_g3 = st.columns([2, 1, 1]) 
+        # Aquí forzamos 3 columnas iguales y altura fija de 350px
+        c1, c2, c3 = st.columns(3) 
 
-        with col_g1:
-            st.subheader("Ranking de Criticidad")
+        # Configuración común para limpieza visual
+        layout_cfg = dict(margin=dict(l=10, r=10, t=30, b=10), showlegend=True, height=350)
+        
+        with c1:
+            st.subheader("Ranking")
             if not df_f.empty:
-                df_rank = df_f.groupby('Equipo').agg(
-                    Fallas=('Fecha', 'count'),
-                    Detalle=('ID_Tecnico', lambda x: list(x))
-                ).reset_index().sort_values('Fallas', ascending=True)
-
-                fig_bar = px.bar(df_rank, x='Fallas', y='Equipo', orientation='h', 
-                                 text='Fallas', color='Fallas', color_continuous_scale='Reds',
-                                 hover_data=['Detalle'])
-                st.plotly_chart(fig_bar, use_container_width=True)
+                df_rank = df_f.groupby('Equipo').agg(Fallas=('Fecha', 'count')).reset_index().sort_values('Fallas', ascending=True)
+                fig = px.bar(df_rank, x='Fallas', y='Equipo', orientation='h', text='Fallas', 
+                             color='Fallas', color_continuous_scale='Reds')
+                fig.update_layout(**layout_cfg)
+                # Mover leyenda de color abajo
+                fig.update_coloraxes(showscale=False) 
+                st.plotly_chart(fig, use_container_width=True)
             else: st.info("Sin datos.")
 
-        # --- NUEVO GRÁFICO DE INVERSORES ---
-        with col_g2:
+        with c2:
             st.subheader("Inversores")
             if not df_f.empty:
-                # Gráfico de Torta de Inversores
-                fig_inv = px.pie(df_f, names='Inversor', title='Fallas por Inversor',
-                                 color_discrete_sequence=px.colors.qualitative.Prism,
-                                 hole=0.4)
-                # Ocultamos la leyenda para ahorrar espacio si hay muchos
-                fig_inv.update_layout(showlegend=False)
-                fig_inv.update_traces(textposition='inside', textinfo='percent+label')
-                st.plotly_chart(fig_inv, use_container_width=True)
+                fig = px.pie(df_f, names='Inversor', color_discrete_sequence=px.colors.qualitative.Prism, hole=0.4)
+                fig.update_traces(textposition='inside', textinfo='percent+label')
+                fig.update_layout(**layout_cfg)
+                fig.update_layout(showlegend=False) # Ocultar leyenda para que el círculo sea grande
+                st.plotly_chart(fig, use_container_width=True)
             else: st.info("Sin datos.")
 
-        with col_g3:
+        with c3:
             st.subheader("Polaridad")
             if not df_f.empty:
-                fig_pie = px.pie(df_f, names='Polaridad', color_discrete_sequence=['#EF553B', '#636EFA'], hole=0.4)
-                st.plotly_chart(fig_pie, use_container_width=True)
+                fig = px.pie(df_f, names='Polaridad', color_discrete_sequence=['#EF553B', '#636EFA'], hole=0.4)
+                fig.update_layout(**layout_cfg)
+                fig.update_layout(legend=dict(orientation="h", y=-0.1)) # Leyenda abajo
+                st.plotly_chart(fig, use_container_width=True)
             else: st.info("Sin datos.")
 
         # --- ZONA DE ANÁLISIS ---
