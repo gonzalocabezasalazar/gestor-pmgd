@@ -11,18 +11,15 @@ from datetime import timedelta
 # --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(page_title="Gestor PMGD", layout="wide", initial_sidebar_state="expanded")
 
-# --- CONEXIÓN SEGURA (NUBE + LOCAL) ---
+# --- CONEXIÓN ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 SHEET_NAME = "DB_FUSIBLES"
 
 def conectar_google_sheets():
     creds = None
-    # 1. Intento Local
     if os.path.exists("credentials.json"):
         try: creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", SCOPE)
         except: pass
-    
-    # 2. Intento Nube (Secrets)
     if creds is None:
         try:
             if "gcp_service_account" in st.secrets:
@@ -30,11 +27,10 @@ def conectar_google_sheets():
         except: pass
     
     if creds is None:
-        st.error("🚫 Error Crítico: No se encuentran las llaves de acceso.")
-        st.stop()
+        st.error("🚫 Error de Llaves."); st.stop()
             
     try: return gspread.authorize(creds).open(SHEET_NAME).sheet1
-    except Exception as e: st.error(f"Error de Conexión: {e}"); st.stop()
+    except Exception as e: st.error(f"Error Conexión: {e}"); st.stop()
 
 # --- GESTIÓN DE DATOS ---
 def cargar_datos():
@@ -44,7 +40,6 @@ def cargar_datos():
         if not data: return pd.DataFrame(columns=['Fecha', 'Planta', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota'])
         df = pd.DataFrame(data)
         if 'Fecha' in df.columns: df['Fecha'] = pd.to_datetime(df['Fecha'])
-        # Asegurar columnas numéricas
         if 'Amperios' in df.columns: df['Amperios'] = pd.to_numeric(df['Amperios'], errors='coerce').fillna(0)
         return df
     except: return pd.DataFrame()
@@ -67,13 +62,13 @@ def guardar_registro_nuevo(registro):
 def borrar_registro_google(idx):
     try:
         sheet = conectar_google_sheets()
-        sheet.delete_rows(idx + 2) # Fix gspread v6
+        sheet.delete_rows(idx + 2)
         st.cache_data.clear()
         st.session_state.df_cache = cargar_datos()
-        st.toast("Registro eliminado", icon="🗑️")
-    except: st.error("No se pudo borrar el registro.")
+        st.toast("Eliminado", icon="🗑️")
+    except: st.error("Error al borrar")
 
-# --- HELPERS ---
+# --- UTILIDADES ---
 def crear_id_tecnico(row):
     try:
         i = str(row['Inversor']).replace('Inv-', '')
@@ -92,10 +87,8 @@ def generar_excel(df, planta):
     except: return None
     return output.getvalue()
 
-# --- CACHÉ ---
 if 'df_cache' not in st.session_state: st.session_state.df_cache = cargar_datos()
 
-# --- PLANTAS ---
 PLANTAS_DEF = ["El Roble", "Las Rojas"]
 def cargar_plantas():
     if os.path.exists("plantas_config.json"):
@@ -104,41 +97,36 @@ def cargar_plantas():
     return PLANTAS_DEF
 plantas = cargar_plantas()
 
-# ================= INTERFAZ GRÁFICA =================
+# ================= INTERFAZ =================
 
 st.title("⚡ Monitor PMGD")
 
-# Botón recarga manual
-if st.button("🔄 Actualizar Datos"):
+if st.button("🔄 Actualizar"):
     st.session_state.df_cache = cargar_datos()
     st.rerun()
 
-# Sidebar
 with st.sidebar:
     st.header("Planta")
     planta_sel = st.selectbox("Seleccionar:", plantas)
     st.divider()
-    with st.expander("Administrar"):
+    with st.expander("Admin Plantas"):
         nueva = st.text_input("Nueva Planta")
-        if st.button("Agregar"):
-            if nueva and nueva not in plantas:
-                plantas.append(nueva)
-                with open("plantas_config.json", 'w') as f: json.dump(plantas, f)
-                st.rerun()
+        if st.button("Agregar") and nueva:
+            plantas.append(nueva)
+            with open("plantas_config.json", 'w') as f: json.dump(plantas, f)
+            st.rerun()
 
-# Pestañas
-tab1, tab2 = st.tabs(["📝 Registro", "📊 Estadísticas"])
+tab1, tab2 = st.tabs(["📝 Ingreso", "📊 Estadísticas"])
 
-# --- PESTAÑA 1: INGRESO ---
+# --- TAB 1: INGRESO ---
 with tab1:
-    st.subheader(f"Ingreso de Falla: {planta_sel}")
+    st.subheader(f"Registro: {planta_sel}")
     with st.form("form_ingreso"):
         c1, c2, c3, c4 = st.columns(4)
         fecha = c1.date_input("Fecha", pd.Timestamp.now())
         inv = c2.number_input("Inversor", 1, 50, 1)
         cja = c3.number_input("Caja", 1, 100, 1)
         str_n = c4.number_input("String", 1, 30, 1)
-        
         c5, c6, c7 = st.columns(3)
         pol = c5.selectbox("Polaridad", ["Positivo (+)", "Negativo (-)"])
         amp = c6.number_input("Amperios", 0.0, 30.0, 0.0, step=0.1)
@@ -146,27 +134,19 @@ with tab1:
         
         if st.form_submit_button("💾 Guardar", type="primary"):
             df = st.session_state.df_cache
-            # Validación duplicados
             dup = df[(df['Planta']==planta_sel) & (df['Fecha']==pd.to_datetime(fecha)) & 
                      (df['Inversor']==f"Inv-{inv}") & (df['Caja']==f"CB-{cja}") & 
                      (df['String']==f"Str-{str_n}")] if not df.empty else pd.DataFrame()
-            
-            if not dup.empty:
-                st.error("⛔ Este registro ya existe.")
+            if not dup.empty: st.error("Duplicado.")
             else:
-                new_data = {
-                    'Fecha': pd.to_datetime(fecha), 'Planta': planta_sel, 
-                    'Inversor': f"Inv-{inv}", 'Caja': f"CB-{cja}", 'String': f"Str-{str_n}", 
-                    'Polaridad': pol, 'Amperios': amp, 'Nota': nota
-                }
+                new_data = {'Fecha': pd.to_datetime(fecha), 'Planta': planta_sel, 
+                            'Inversor': f"Inv-{inv}", 'Caja': f"CB-{cja}", 'String': f"Str-{str_n}", 
+                            'Polaridad': pol, 'Amperios': amp, 'Nota': nota}
                 guardar_registro_nuevo(new_data)
                 st.session_state.df_cache = cargar_datos()
-                st.success("Guardado correctamente.")
-                st.rerun()
+                st.success("Guardado."); st.rerun()
 
-    # Tabla de últimos registros con botón borrar
     st.divider()
-    st.markdown("##### Últimos Registros")
     df_show = st.session_state.df_cache.copy()
     if not df_show.empty:
         df_p = df_show[df_show['Planta'] == planta_sel]
@@ -179,72 +159,76 @@ with tab1:
                 cols[2].write(f"{id_tec}")
                 cols[3].write(f"⚡ {row['Amperios']}A")
                 if row['Nota']: cols[4].caption(row['Nota'])
-                if cols[5].button("🗑️", key=f"del_{i}"):
-                    borrar_registro_google(i)
-                    st.rerun()
-        else: st.info("No hay datos en esta planta.")
+                if cols[5].button("🗑️", key=f"del_{i}"): borrar_registro_google(i); st.rerun()
 
-# --- PESTAÑA 2: GRÁFICOS (ESTILO V7) ---
+# --- TAB 2: ESTADISTICAS ---
 with tab2:
     df = st.session_state.df_cache
     if not df.empty:
-        # 1. FILTROS DE TIEMPO (LO QUE PEDISTE)
-        st.markdown("**Filtros de Tiempo**")
-        filtro = st.radio("Periodo:", ["Todo", "Este Mes", "Último Trimestre", "Último Semestre", "Último Año"], horizontal=True)
+        # FILTROS
+        st.write("⏱️ **Filtros de Tiempo**")
+        filtro = st.radio("Ver:", ["Todo", "Este Mes", "Último Trimestre", "Último Semestre", "Último Año"], horizontal=True)
         
-        # Aplicar filtro
         df_f = df[df['Planta'] == planta_sel].copy()
         df_f['Equipo'] = df_f['Inversor'] + " > " + df_f['Caja']
-        
+        df_f['ID_Tecnico'] = df_f.apply(crear_id_tecnico, axis=1) # Para hover y tabla
+
         hoy = pd.Timestamp.now()
         if filtro == "Este Mes": df_f = df_f[df_f['Fecha'].dt.month == hoy.month]
         elif filtro == "Último Trimestre": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=90))]
         elif filtro == "Último Semestre": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=180))]
         elif filtro == "Último Año": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=365))]
 
-        # KPIs Rápidos
+        # KPIs
         st.divider()
         k1, k2, k3 = st.columns(3)
         k1.metric("Total Fallas", len(df_f))
         k2.metric("Promedio Amperios", f"{df_f['Amperios'].mean():.1f} A")
-        
         top = df_f['Equipo'].mode()
-        k3.metric("Equipo Más Crítico", top[0] if not top.empty else "-")
+        k3.metric("Equipo Crítico", top[0] if not top.empty else "-")
 
-        # 2. LOS GRÁFICOS (LAYOUT V7: LADO A LADO)
+        # GRÁFICOS SOLICITADOS
         st.divider()
-        
-        col_graf1, col_graf2 = st.columns(2)
-        
-        with col_graf1:
-            st.subheader("Ranking de Fallas")
-            # Gráfico de Barras Horizontal
+        col_g1, col_g2 = st.columns([2, 1]) # 2/3 para Barras, 1/3 para Torta
+
+        with col_g1:
+            st.subheader("Ranking de Criticidad (Heatmap)")
             if not df_f.empty:
-                conteo = df_f['Equipo'].value_counts().reset_index()
-                conteo.columns = ['Equipo', 'Fallas']
-                fig_bar = px.bar(conteo, x='Fallas', y='Equipo', orientation='h', text='Fallas')
+                # Agrupar datos + Lista de strings para el Hover
+                df_rank = df_f.groupby('Equipo').agg(
+                    Fallas=('Fecha', 'count'),
+                    Detalle=('ID_Tecnico', lambda x: list(x))
+                ).reset_index().sort_values('Fallas', ascending=True)
+
+                # GRÁFICO DE BARRAS "TÉRMICO"
+                # color='Fallas' crea la barra vertical de calor
+                # color_continuous_scale='Reds' hace que vaya de blanco/rosa a Rojo Puro
+                fig_bar = px.bar(df_rank, x='Fallas', y='Equipo', orientation='h', 
+                                 text='Fallas',
+                                 color='Fallas', 
+                                 color_continuous_scale='Reds', # Escala de rojos
+                                 hover_data=['Detalle'])
+                
                 st.plotly_chart(fig_bar, use_container_width=True)
             else: st.info("Sin datos.")
 
-        with col_graf2:
-            st.subheader("Mapa de Calor (Intensidad)")
-            # El Heatmap que pediste (como barra/cuadrícula)
+        with col_g2:
+            st.subheader("Polaridad")
             if not df_f.empty:
-                df_heat = df_f.groupby(['Inversor', 'Caja']).size().reset_index(name='Fallas')
-                fig_heat = px.density_heatmap(df_heat, x="Caja", y="Inversor", z="Fallas", 
-                                              text_auto=True, color_continuous_scale="Viridis")
-                st.plotly_chart(fig_heat, use_container_width=True)
+                # GRÁFICO DE TORTA (Recuperado)
+                fig_pie = px.pie(df_f, names='Polaridad', 
+                                 color_discrete_sequence=['#EF553B', '#636EFA'], # Rojo/Azul aprox
+                                 hole=0.4)
+                st.plotly_chart(fig_pie, use_container_width=True)
             else: st.info("Sin datos.")
 
-        # 3. TABLA FINAL Y DESCARGA
+        # TABLA DETALLADA
         st.divider()
-        st.subheader("Detalle de Datos")
-        df_f['ID_Tecnico'] = df_f.apply(crear_id_tecnico, axis=1) # Mostrar ID técnico en tabla
-        st.dataframe(df_f[['Fecha', 'ID_Tecnico', 'Inversor', 'Caja', 'String', 'Amperios', 'Nota']], use_container_width=True)
+        st.subheader("Detalle Operativo")
+        st.dataframe(df_f[['Fecha', 'ID_Tecnico', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota']], use_container_width=True)
         
         excel_data = generar_excel(df_f, planta_sel)
         if excel_data:
             st.download_button("📥 Descargar Excel", excel_data, f"Reporte_{planta_sel}.xlsx")
 
-    else:
-        st.info("No hay datos cargados en la base de datos.")
+    else: st.info("Base de datos vacía.")
