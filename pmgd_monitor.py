@@ -98,7 +98,7 @@ def generar_analisis_auto(df):
             f"- Tendencia de Polaridad: {trend} ({pos} vs {neg}).\n"
             f"- Promedio de corriente de falla: {df['Amperios'].mean():.1f} A.")
 
-# --- EXCEL PRO CON GRÁFICO ---
+# --- EXCEL PRO (CORREGIDO: FECHA SIN HORA) ---
 def generar_excel_pro(df, planta, periodo, comentarios):
     output = io.BytesIO()
     if df.empty: return None
@@ -112,6 +112,8 @@ def generar_excel_pro(df, planta, periodo, comentarios):
             f_titulo = wb.add_format({'bold': True, 'font_size': 16, 'color': 'white', 'bg_color': '#C0392B', 'align': 'center'})
             f_sub = wb.add_format({'bold': True, 'bottom': 1})
             f_texto = wb.add_format({'text_wrap': True, 'border': 1, 'valign': 'top'})
+            # Formato de fecha para Excel
+            f_fecha = wb.add_format({'num_format': 'yyyy-mm-dd', 'align': 'left'})
             
             # Encabezado
             ws.merge_range('B2:H2', f"REPORTE DE FALLAS: {planta.upper()}", f_titulo)
@@ -120,44 +122,38 @@ def generar_excel_pro(df, planta, periodo, comentarios):
             
             # Comentarios
             ws.write('B5', "ANÁLISIS TÉCNICO:", f_sub)
-            ws.merge_range('B6:F10', comentarios, f_texto) # Espacio para texto
+            ws.merge_range('B6:F10', comentarios, f_texto)
             
-            # --- GENERACIÓN DE DATOS PARA GRÁFICO DE TORTA ---
-            # Agrupamos por Inversor para ver distribución de fusibles operados
+            # --- DATOS PARA GRÁFICO ---
             df_chart = df['Inversor'].value_counts().reset_index()
             df_chart.columns = ['Inversor', 'Cantidad']
-            
-            # Escribimos los datos del gráfico en un lugar oculto (Columna K)
             df_chart.to_excel(writer, sheet_name='Reporte Técnico', startrow=5, startcol=10, index=False)
             
-            # Crear el objeto Gráfico
             chart = wb.add_chart({'type': 'pie'})
-            
-            # Configurar serie de datos (toma los datos de la columna K)
-            # Categorías (Nombres): Columna K (10)
-            # Valores (Números): Columna L (11)
             chart.add_series({
                 'name': 'Distribución de Fallas',
                 'categories': ['Reporte Técnico', 6, 10, 6 + len(df_chart) - 1, 10],
                 'values':     ['Reporte Técnico', 6, 11, 6 + len(df_chart) - 1, 11],
                 'data_labels': {'percentage': True},
             })
-            
             chart.set_title({'name': 'Fusibles Operados por Inversor'})
-            chart.set_style(10) # Estilo visual agradable
-            
-            # Insertar el gráfico al lado del texto de análisis
+            chart.set_style(10)
             ws.insert_chart('G6', chart, {'x_scale': 0.9, 'y_scale': 0.9})
 
             # --- TABLA DE DATOS PRINCIPAL ---
             ws.write('B13', "DETALLE DE EVENTOS:", f_sub)
-            df_export = df[['Fecha', 'ID_Tecnico', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota']]
+            
+            # Preparamos el DF para exportar (Quitamos la hora)
+            df_export = df[['Fecha', 'ID_Tecnico', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota']].copy()
+            # Convertimos a objeto date (sin hora)
+            df_export['Fecha'] = df_export['Fecha'].dt.date
+            
             df_export.to_excel(writer, sheet_name='Reporte Técnico', startrow=13, startcol=1, index=False)
             
-            # Ajustar anchos de columna
-            ws.set_column('B:B', 12) # Fecha
-            ws.set_column('C:C', 15) # ID
-            ws.set_column('H:H', 30) # Nota
+            # Ajustar anchos y formato
+            ws.set_column('B:B', 12, f_fecha) # Columna Fecha con formato limpio
+            ws.set_column('C:C', 15)
+            ws.set_column('H:H', 30)
             
     except Exception as e: return None
     return output.getvalue()
@@ -240,7 +236,6 @@ with tab1:
 with tab2:
     df = st.session_state.df_cache
     if not df.empty:
-        # FILTROS
         st.write("⏱️ **Filtros de Tiempo**")
         filtro = st.radio("Ver:", ["Todo", "Este Mes", "Último Trimestre", "Último Semestre", "Último Año"], horizontal=True)
         
@@ -254,7 +249,6 @@ with tab2:
         elif filtro == "Último Semestre": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=180))]
         elif filtro == "Último Año": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=365))]
 
-        # KPIs
         st.divider()
         k1, k2, k3 = st.columns(3)
         k1.metric("Total Fallas", len(df_f))
@@ -262,9 +256,10 @@ with tab2:
         top = df_f['Equipo'].mode()
         k3.metric("Equipo Crítico", top[0] if not top.empty else "-")
 
-        # GRÁFICOS
+        # GRÁFICOS (3 COLUMNAS)
         st.divider()
-        col_g1, col_g2 = st.columns([2, 1])
+        # [2, 1, 1] significa: La primera col es el doble de ancha que las otras dos
+        col_g1, col_g2, col_g3 = st.columns([2, 1, 1]) 
 
         with col_g1:
             st.subheader("Ranking de Criticidad")
@@ -280,7 +275,21 @@ with tab2:
                 st.plotly_chart(fig_bar, use_container_width=True)
             else: st.info("Sin datos.")
 
+        # --- NUEVO GRÁFICO DE INVERSORES ---
         with col_g2:
+            st.subheader("Inversores")
+            if not df_f.empty:
+                # Gráfico de Torta de Inversores
+                fig_inv = px.pie(df_f, names='Inversor', title='Fallas por Inversor',
+                                 color_discrete_sequence=px.colors.qualitative.Prism,
+                                 hole=0.4)
+                # Ocultamos la leyenda para ahorrar espacio si hay muchos
+                fig_inv.update_layout(showlegend=False)
+                fig_inv.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig_inv, use_container_width=True)
+            else: st.info("Sin datos.")
+
+        with col_g3:
             st.subheader("Polaridad")
             if not df_f.empty:
                 fig_pie = px.pie(df_f, names='Polaridad', color_discrete_sequence=['#EF553B', '#636EFA'], hole=0.4)
@@ -290,9 +299,7 @@ with tab2:
         # --- ZONA DE ANÁLISIS ---
         st.divider()
         st.subheader("🧠 Centro de Análisis")
-        
         col_ia, col_man = st.columns(2)
-        
         texto_ia = generar_analisis_auto(df_f)
         
         with col_ia:
@@ -307,14 +314,13 @@ with tab2:
                                                value=st.session_state.get('borrador_informe', ''),
                                                height=150)
 
-        # TABLA Y EXPORTACIÓN
         st.divider()
         st.subheader("Detalle & Exportación")
         st.dataframe(df_f[['Fecha', 'ID_Tecnico', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota']], use_container_width=True)
         
         excel_data = generar_excel_pro(df_f, planta_sel, filtro, comentarios_finales)
         if excel_data:
-            st.download_button("📥 Descargar Reporte con Gráfico (Excel)", excel_data, 
+            st.download_button("📥 Descargar Reporte Profesional (Excel)", excel_data, 
                                f"Informe_{planta_sel}.xlsx", 
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                type="primary")
