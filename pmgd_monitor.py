@@ -98,6 +98,7 @@ def generar_analisis_auto(df):
             f"- Tendencia de Polaridad: {trend} ({pos} vs {neg}).\n"
             f"- Promedio de corriente de falla: {df['Amperios'].mean():.1f} A.")
 
+# --- EXCEL PRO CON GRÁFICO ---
 def generar_excel_pro(df, planta, periodo, comentarios):
     output = io.BytesIO()
     if df.empty: return None
@@ -119,14 +120,46 @@ def generar_excel_pro(df, planta, periodo, comentarios):
             
             # Comentarios
             ws.write('B5', "ANÁLISIS TÉCNICO:", f_sub)
-            ws.merge_range('B6:H10', comentarios, f_texto)
+            ws.merge_range('B6:F10', comentarios, f_texto) # Espacio para texto
             
-            # Datos
-            ws.write('B12', "DETALLE DE EVENTOS:", f_sub)
+            # --- GENERACIÓN DE DATOS PARA GRÁFICO DE TORTA ---
+            # Agrupamos por Inversor para ver distribución de fusibles operados
+            df_chart = df['Inversor'].value_counts().reset_index()
+            df_chart.columns = ['Inversor', 'Cantidad']
+            
+            # Escribimos los datos del gráfico en un lugar oculto (Columna K)
+            df_chart.to_excel(writer, sheet_name='Reporte Técnico', startrow=5, startcol=10, index=False)
+            
+            # Crear el objeto Gráfico
+            chart = wb.add_chart({'type': 'pie'})
+            
+            # Configurar serie de datos (toma los datos de la columna K)
+            # Categorías (Nombres): Columna K (10)
+            # Valores (Números): Columna L (11)
+            chart.add_series({
+                'name': 'Distribución de Fallas',
+                'categories': ['Reporte Técnico', 6, 10, 6 + len(df_chart) - 1, 10],
+                'values':     ['Reporte Técnico', 6, 11, 6 + len(df_chart) - 1, 11],
+                'data_labels': {'percentage': True},
+            })
+            
+            chart.set_title({'name': 'Fusibles Operados por Inversor'})
+            chart.set_style(10) # Estilo visual agradable
+            
+            # Insertar el gráfico al lado del texto de análisis
+            ws.insert_chart('G6', chart, {'x_scale': 0.9, 'y_scale': 0.9})
+
+            # --- TABLA DE DATOS PRINCIPAL ---
+            ws.write('B13', "DETALLE DE EVENTOS:", f_sub)
             df_export = df[['Fecha', 'ID_Tecnico', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota']]
-            df_export.to_excel(writer, sheet_name='Reporte Técnico', startrow=12, startcol=1, index=False)
+            df_export.to_excel(writer, sheet_name='Reporte Técnico', startrow=13, startcol=1, index=False)
             
-    except: return None
+            # Ajustar anchos de columna
+            ws.set_column('B:B', 12) # Fecha
+            ws.set_column('C:C', 15) # ID
+            ws.set_column('H:H', 30) # Nota
+            
+    except Exception as e: return None
     return output.getvalue()
 
 if 'df_cache' not in st.session_state: st.session_state.df_cache = cargar_datos()
@@ -260,19 +293,16 @@ with tab2:
         
         col_ia, col_man = st.columns(2)
         
-        # Generar texto IA
         texto_ia = generar_analisis_auto(df_f)
         
         with col_ia:
             st.info("🤖 Análisis Automático (IA)")
             st.write(texto_ia)
-            # Botón para mover texto
             if st.button("Copiar IA al Informe 👉"):
                 st.session_state['borrador_informe'] = texto_ia
 
         with col_man:
             st.warning("📝 Informe Técnico del Ingeniero")
-            # Text Area con valor por defecto o copiado
             comentarios_finales = st.text_area("Edita tus conclusiones aquí:", 
                                                value=st.session_state.get('borrador_informe', ''),
                                                height=150)
@@ -284,7 +314,7 @@ with tab2:
         
         excel_data = generar_excel_pro(df_f, planta_sel, filtro, comentarios_finales)
         if excel_data:
-            st.download_button("📥 Descargar Reporte Profesional (Excel)", excel_data, 
+            st.download_button("📥 Descargar Reporte con Gráfico (Excel)", excel_data, 
                                f"Informe_{planta_sel}.xlsx", 
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                type="primary")
