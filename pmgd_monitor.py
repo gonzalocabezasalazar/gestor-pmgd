@@ -243,22 +243,24 @@ with tab2:
         top = df_f['Equipo'].mode()
         k3.metric("Equipo Crítico", top[0] if not top.empty else "-")
 
-        # GRÁFICOS (3 COLUMNAS IGUALES PARA SIMETRÍA)
         st.divider()
-        # Aquí forzamos 3 columnas iguales y altura fija de 350px
         c1, c2, c3 = st.columns(3) 
-
-        # Configuración común para limpieza visual
         layout_cfg = dict(margin=dict(l=10, r=10, t=30, b=10), showlegend=True, height=350)
         
         with c1:
             st.subheader("Ranking")
             if not df_f.empty:
-                df_rank = df_f.groupby('Equipo').agg(Fallas=('Fecha', 'count')).reset_index().sort_values('Fallas', ascending=True)
+                # --- CORRECCIÓN AQUÍ: Agregamos 'Detalle' al agrupamiento ---
+                df_rank = df_f.groupby('Equipo').agg(
+                    Fallas=('Fecha', 'count'),
+                    Detalle=('ID_Tecnico', lambda x: list(x)) # Esto recupera los IDs
+                ).reset_index().sort_values('Fallas', ascending=True)
+                
                 fig = px.bar(df_rank, x='Fallas', y='Equipo', orientation='h', text='Fallas', 
-                             color='Fallas', color_continuous_scale='Reds')
+                             color='Fallas', color_continuous_scale='Reds',
+                             hover_data=['Detalle']) # Mostramos el detalle en el hover
+                
                 fig.update_layout(**layout_cfg)
-                # Mover leyenda de color abajo
                 fig.update_coloraxes(showscale=False) 
                 st.plotly_chart(fig, use_container_width=True)
             else: st.info("Sin datos.")
@@ -269,7 +271,7 @@ with tab2:
                 fig = px.pie(df_f, names='Inversor', color_discrete_sequence=px.colors.qualitative.Prism, hole=0.4)
                 fig.update_traces(textposition='inside', textinfo='percent+label')
                 fig.update_layout(**layout_cfg)
-                fig.update_layout(showlegend=False) # Ocultar leyenda para que el círculo sea grande
+                fig.update_layout(showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
             else: st.info("Sin datos.")
 
@@ -278,11 +280,10 @@ with tab2:
             if not df_f.empty:
                 fig = px.pie(df_f, names='Polaridad', color_discrete_sequence=['#EF553B', '#636EFA'], hole=0.4)
                 fig.update_layout(**layout_cfg)
-                fig.update_layout(legend=dict(orientation="h", y=-0.1)) # Leyenda abajo
+                fig.update_layout(legend=dict(orientation="h", y=-0.1))
                 st.plotly_chart(fig, use_container_width=True)
             else: st.info("Sin datos.")
 
-        # --- ZONA DE ANÁLISIS ---
         st.divider()
         st.subheader("🧠 Centro de Análisis")
         col_ia, col_man = st.columns(2)
