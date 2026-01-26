@@ -9,7 +9,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import timedelta
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(page_title="Gestor PMGD", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Gestor PMGD Pro", layout="wide", initial_sidebar_state="expanded")
 
 # --- CONEXIÓN ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -68,7 +68,7 @@ def borrar_registro_google(idx):
         st.toast("Eliminado", icon="🗑️")
     except: st.error("Error al borrar")
 
-# --- UTILIDADES ---
+# --- INTELIGENCIA (IA) ---
 def crear_id_tecnico(row):
     try:
         i = str(row['Inversor']).replace('Inv-', '')
@@ -78,12 +78,54 @@ def crear_id_tecnico(row):
         return f"{i}-{c}-{s} {p}"
     except: return "Error"
 
-def generar_excel(df, planta):
+def generar_analisis_auto(df):
+    if df.empty: return "Sin datos para análisis."
+    
+    total = len(df)
+    eq_mode = (df['Inversor'] + " > " + df['Caja']).mode()
+    critico = eq_mode[0] if not eq_mode.empty else "N/A"
+    
+    pos = len(df[df['Polaridad'].astype(str).str.contains("Positivo")])
+    neg = len(df[df['Polaridad'].astype(str).str.contains("Negativo")])
+    
+    trend = "Equilibrada"
+    if pos > neg * 1.3: trend = "PREDOMINANCIA POSITIVA (+)"
+    if neg > pos * 1.3: trend = "PREDOMINANCIA NEGATIVA (-)"
+    
+    return (f"RESUMEN AUTOMÁTICO:\n"
+            f"- Se registraron {total} eventos en el periodo.\n"
+            f"- El equipo más afectado es {critico}.\n"
+            f"- Tendencia de Polaridad: {trend} ({pos} vs {neg}).\n"
+            f"- Promedio de corriente de falla: {df['Amperios'].mean():.1f} A.")
+
+def generar_excel_pro(df, planta, periodo, comentarios):
     output = io.BytesIO()
     if df.empty: return None
     try:
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='Datos')
+            wb = writer.book
+            ws = wb.add_worksheet('Reporte Técnico')
+            ws.hide_gridlines(2)
+            
+            # Formatos
+            f_titulo = wb.add_format({'bold': True, 'font_size': 16, 'color': 'white', 'bg_color': '#C0392B', 'align': 'center'})
+            f_sub = wb.add_format({'bold': True, 'bottom': 1})
+            f_texto = wb.add_format({'text_wrap': True, 'border': 1, 'valign': 'top'})
+            
+            # Encabezado
+            ws.merge_range('B2:H2', f"REPORTE DE FALLAS: {planta.upper()}", f_titulo)
+            ws.write('B3', f"Periodo: {periodo}")
+            ws.write('E3', f"Fecha: {pd.Timestamp.now().strftime('%d-%m-%Y')}")
+            
+            # Comentarios
+            ws.write('B5', "ANÁLISIS TÉCNICO:", f_sub)
+            ws.merge_range('B6:H10', comentarios, f_texto)
+            
+            # Datos
+            ws.write('B12', "DETALLE DE EVENTOS:", f_sub)
+            df_export = df[['Fecha', 'ID_Tecnico', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota']]
+            df_export.to_excel(writer, sheet_name='Reporte Técnico', startrow=12, startcol=1, index=False)
+            
     except: return None
     return output.getvalue()
 
@@ -99,7 +141,7 @@ plantas = cargar_plantas()
 
 # ================= INTERFAZ =================
 
-st.title("⚡ Monitor PMGD")
+st.title("⚡ Monitor PMGD: Ingeniería")
 
 if st.button("🔄 Actualizar"):
     st.session_state.df_cache = cargar_datos()
@@ -116,7 +158,7 @@ with st.sidebar:
             with open("plantas_config.json", 'w') as f: json.dump(plantas, f)
             st.rerun()
 
-tab1, tab2 = st.tabs(["📝 Ingreso", "📊 Estadísticas"])
+tab1, tab2 = st.tabs(["📝 Ingreso", "📊 Estadísticas & Informe"])
 
 # --- TAB 1: INGRESO ---
 with tab1:
@@ -171,7 +213,7 @@ with tab2:
         
         df_f = df[df['Planta'] == planta_sel].copy()
         df_f['Equipo'] = df_f['Inversor'] + " > " + df_f['Caja']
-        df_f['ID_Tecnico'] = df_f.apply(crear_id_tecnico, axis=1) # Para hover y tabla
+        df_f['ID_Tecnico'] = df_f.apply(crear_id_tecnico, axis=1)
 
         hoy = pd.Timestamp.now()
         if filtro == "Este Mes": df_f = df_f[df_f['Fecha'].dt.month == hoy.month]
@@ -187,48 +229,64 @@ with tab2:
         top = df_f['Equipo'].mode()
         k3.metric("Equipo Crítico", top[0] if not top.empty else "-")
 
-        # GRÁFICOS SOLICITADOS
+        # GRÁFICOS
         st.divider()
-        col_g1, col_g2 = st.columns([2, 1]) # 2/3 para Barras, 1/3 para Torta
+        col_g1, col_g2 = st.columns([2, 1])
 
         with col_g1:
-            st.subheader("Ranking de Criticidad (Heatmap)")
+            st.subheader("Ranking de Criticidad")
             if not df_f.empty:
-                # Agrupar datos + Lista de strings para el Hover
                 df_rank = df_f.groupby('Equipo').agg(
                     Fallas=('Fecha', 'count'),
                     Detalle=('ID_Tecnico', lambda x: list(x))
                 ).reset_index().sort_values('Fallas', ascending=True)
 
-                # GRÁFICO DE BARRAS "TÉRMICO"
-                # color='Fallas' crea la barra vertical de calor
-                # color_continuous_scale='Reds' hace que vaya de blanco/rosa a Rojo Puro
                 fig_bar = px.bar(df_rank, x='Fallas', y='Equipo', orientation='h', 
-                                 text='Fallas',
-                                 color='Fallas', 
-                                 color_continuous_scale='Reds', # Escala de rojos
+                                 text='Fallas', color='Fallas', color_continuous_scale='Reds',
                                  hover_data=['Detalle'])
-                
                 st.plotly_chart(fig_bar, use_container_width=True)
             else: st.info("Sin datos.")
 
         with col_g2:
             st.subheader("Polaridad")
             if not df_f.empty:
-                # GRÁFICO DE TORTA (Recuperado)
-                fig_pie = px.pie(df_f, names='Polaridad', 
-                                 color_discrete_sequence=['#EF553B', '#636EFA'], # Rojo/Azul aprox
-                                 hole=0.4)
+                fig_pie = px.pie(df_f, names='Polaridad', color_discrete_sequence=['#EF553B', '#636EFA'], hole=0.4)
                 st.plotly_chart(fig_pie, use_container_width=True)
             else: st.info("Sin datos.")
 
-        # TABLA DETALLADA
+        # --- ZONA DE ANÁLISIS ---
         st.divider()
-        st.subheader("Detalle Operativo")
+        st.subheader("🧠 Centro de Análisis")
+        
+        col_ia, col_man = st.columns(2)
+        
+        # Generar texto IA
+        texto_ia = generar_analisis_auto(df_f)
+        
+        with col_ia:
+            st.info("🤖 Análisis Automático (IA)")
+            st.write(texto_ia)
+            # Botón para mover texto
+            if st.button("Copiar IA al Informe 👉"):
+                st.session_state['borrador_informe'] = texto_ia
+
+        with col_man:
+            st.warning("📝 Informe Técnico del Ingeniero")
+            # Text Area con valor por defecto o copiado
+            comentarios_finales = st.text_area("Edita tus conclusiones aquí:", 
+                                               value=st.session_state.get('borrador_informe', ''),
+                                               height=150)
+
+        # TABLA Y EXPORTACIÓN
+        st.divider()
+        st.subheader("Detalle & Exportación")
         st.dataframe(df_f[['Fecha', 'ID_Tecnico', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota']], use_container_width=True)
         
-        excel_data = generar_excel(df_f, planta_sel)
+        excel_data = generar_excel_pro(df_f, planta_sel, filtro, comentarios_finales)
         if excel_data:
-            st.download_button("📥 Descargar Excel", excel_data, f"Reporte_{planta_sel}.xlsx")
+            st.download_button("📥 Descargar Reporte Profesional (Excel)", excel_data, 
+                               f"Informe_{planta_sel}.xlsx", 
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               type="primary")
 
     else: st.info("Base de datos vacía.")
