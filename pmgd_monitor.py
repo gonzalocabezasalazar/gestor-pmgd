@@ -67,6 +67,7 @@ def guardar_registro_nuevo(registro):
 def borrar_registro_google(idx):
     try:
         sheet = conectar_google_sheets()
+        # Corrección V12.1: delete_rows
         sheet.delete_rows(idx + 2)
         st.cache_data.clear()
         st.session_state.df_cache = cargar_datos()
@@ -215,7 +216,13 @@ with tab1:
                 cols[1].write(f"**{row['Inversor']} > {row['Caja']}**")
                 cols[2].write(f"🔌 {row['String']} ({row['Polaridad']})")
                 cols[3].write(f"⚡ **{row['Amperios']} A**")
-                cols[4].info(row['Nota']) if row['Nota'] else None
+                
+                # --- CORRECCION DEL ERROR VISUAL ---
+                # Antes: cols[4].info(...) if ... (Esto provocaba el texto raro)
+                # Ahora: Estructura if limpia
+                if row['Nota']:
+                    cols[4].info(row['Nota'])
+                
                 if cols[5].button("🗑️", key=f"del_{i}"): borrar_registro_google(i); st.rerun()
         else: st.info("Sin registros.")
 
