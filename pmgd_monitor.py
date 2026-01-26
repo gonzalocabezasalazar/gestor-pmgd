@@ -58,7 +58,7 @@ def guardar_registro_nuevo(registro):
         registro['Caja'],
         registro['String'],
         registro['Polaridad'],
-        str(registro['Amperios']), # Guardamos Amperios
+        str(registro['Amperios']),
         registro['Nota']
     ]
     sheet.append_row(reg_list)
@@ -67,75 +67,65 @@ def guardar_registro_nuevo(registro):
 def borrar_registro_google(idx):
     try:
         sheet = conectar_google_sheets()
-        # Corrección V12.1: delete_rows
         sheet.delete_rows(idx + 2)
         st.cache_data.clear()
         st.session_state.df_cache = cargar_datos()
         st.toast("Borrado exitoso", icon="🗑️")
     except: st.error("Error al borrar")
 
+# --- GENERADOR DE CÓDIGO TÉCNICO ---
+def crear_id_tecnico(row):
+    """Convierte los datos en formato 1-12-24 (+)"""
+    try:
+        # Extraer números de los textos (ej: "Inv-1" -> "1")
+        i = str(row['Inversor']).replace('Inv-', '')
+        c = str(row['Caja']).replace('CB-', '')
+        s = str(row['String']).replace('Str-', '')
+        # Polaridad corta
+        p = "(+)" if "Positivo" in str(row['Polaridad']) else "(-)"
+        return f"{i}-{c}-{s} {p}"
+    except:
+        return "Error-ID"
+
 # --- GENERADOR DE ANÁLISIS AUTOMÁTICO ---
 def generar_analisis_auto(df):
-    if df.empty: return "Sin datos suficientes para análisis."
-    
+    if df.empty: return "Sin datos suficientes."
     total = len(df)
     equipo_top = (df['Inversor'] + " > " + df['Caja']).mode()
-    equipo_critico = equipo_top[0] if not equipo_top.empty else "N/A"
-    
-    # Análisis de Polaridad
+    critico = equipo_top[0] if not equipo_top.empty else "N/A"
     pos = len(df[df['Polaridad'].str.contains("Positivo", na=False)])
     neg = len(df[df['Polaridad'].str.contains("Negativo", na=False)])
-    trend_pol = "Equilibrada"
-    if pos > neg * 1.5: trend_pol = "Predominancia POSITIVA (Posible falla a tierra DC)"
-    if neg > pos * 1.5: trend_pol = "Predominancia NEGATIVA"
+    trend = "Positiva" if pos > neg else "Negativa"
+    return (f"ANÁLISIS AUTOMÁTICO:\nTotal Eventos: {total}.\nEquipo Crítico: {critico}.\n"
+            f"Tendencia Polaridad: {trend} ({pos} vs {neg}).\nPromedio Corriente: {df['Amperios'].mean():.1f} A.")
 
-    texto = (f"ANÁLISIS AUTOMÁTICO:\n"
-             f"Se han registrado {total} eventos en el periodo seleccionado.\n"
-             f"El punto más crítico es {equipo_critico}, el cual presenta la mayor recurrencia.\n"
-             f"Tendencia de Polaridad: {trend_pol}.\n"
-             f"Promedio de corriente registrada: {df['Amperios'].mean():.1f} A.")
-    return texto
-
-# --- EXCEL PRO CON ANÁLISIS ---
+# --- EXCEL PRO ---
 def generar_excel_profesional(df_reporte, planta, periodo, analisis_manual):
     output = io.BytesIO()
     if df_reporte.empty: return None
     df_rep = df_reporte.copy()
-    df_rep['Equipo'] = df_rep['Inversor'] + " > " + df_rep['Caja']
+    
+    # Agregar columna ID Técnico al Excel también
+    df_rep['ID_Tecnico'] = df_rep.apply(crear_id_tecnico, axis=1)
     
     try:
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             wb = writer.book
             ws = wb.add_worksheet('Reporte Ingeniería')
             ws.hide_gridlines(2)
-            
-            # Estilos
             f_titulo = wb.add_format({'bold': True, 'font_size': 16, 'color': '#ffffff', 'bg_color': '#2e86c1', 'align': 'center'})
             f_sub = wb.add_format({'bold': True, 'font_size': 12, 'bottom': 1})
             f_wrap = wb.add_format({'text_wrap': True, 'border': 1, 'valign': 'top'})
             
-            # Encabezado
-            ws.merge_range('B2:H2', f"INFORME TÉCNICO DE FALLAS: {planta.upper()}", f_titulo)
+            ws.merge_range('B2:H2', f"INFORME: {planta.upper()}", f_titulo)
             ws.write('B3', f"Periodo: {periodo}")
-            ws.write('E3', f"Fecha Emisión: {pd.Timestamp.now().strftime('%d-%m-%Y')}")
+            ws.write('B5', "ANÁLISIS:", f_sub)
+            ws.merge_range('B6:H9', analisis_manual, f_wrap)
+            ws.write('B11', "DETALLE:", f_sub)
             
-            # Sección Análisis
-            ws.write('B5', "ANÁLISIS TÉCNICO (Ingeniería):", f_sub)
-            ws.merge_range('B6:H10', analisis_manual, f_wrap)
-            
-            # Datos principales
-            ws.write('B12', "DETALLE DE OPERACIONES:", f_sub)
-            df_export = df_rep[['Fecha', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota']]
-            df_export.to_excel(writer, sheet_name='Reporte Ingeniería', startrow=12, startcol=1, index=False)
-            
-            # Gráfico simple en Excel
-            chart = wb.add_chart({'type': 'column'})
-            chart.add_series({
-                'name': 'Amperios',
-                'categories': ['Reporte Ingeniería', 13, 1, 13+len(df_export)-1, 1], # Fechas
-                'values':     ['Reporte Ingeniería', 13, 6, 13+len(df_export)-1, 6], # Amperios
-            })
-            ws.insert_chart('J6', chart)
+            # Columnas a exportar
+            cols_export = ['Fecha', 'ID_Tecnico', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota']
+            df_rep[cols_export].to_excel(writer, sheet_name='Reporte Ingeniería', startrow=11, startcol=1, index=False)
             
     except: return None
     return output.getvalue()
@@ -143,7 +133,6 @@ def generar_excel_profesional(df_reporte, planta, periodo, analisis_manual):
 # --- CACHÉ ---
 if 'df_cache' not in st.session_state: st.session_state.df_cache = cargar_datos()
 
-# Config Plantas
 PLANTAS_DEF = ["El Roble", "Las Rojas"]
 def cargar_plantas():
     if os.path.exists("plantas_config.json"):
@@ -172,7 +161,6 @@ with st.sidebar:
 
 tab1, tab2 = st.tabs(["📝 Registro Técnico", "📈 Análisis & Reportes"])
 
-# --- PESTAÑA 1: REGISTRO ---
 with tab1:
     st.subheader(f"Bitácora: {planta_sel}")
     with st.form("entry"):
@@ -181,28 +169,24 @@ with tab1:
         inv = c2.number_input("Inv #", 1, 50, 1)
         cja = c3.number_input("Caja #", 1, 100, 1)
         str_n = c4.number_input("String #", 1, 30, 1)
-        
         c5, c6, c7 = st.columns(3)
         pol = c5.selectbox("Polaridad", ["Positivo (+)", "Negativo (-)"])
-        # AQUI AGREGAMOS EL CAMPO AMPERIOS
-        amp = c6.number_input("Amperios (A)", 0.0, 30.0, 0.0, step=0.1, help="Corriente medida o nominal del fusible")
+        amp = c6.number_input("Amperios (A)", 0.0, 30.0, 0.0, step=0.1)
         nota = c7.text_input("Obs. Técnica")
         
-        if st.form_submit_button("💾 Registrar Evento", type="primary"):
+        if st.form_submit_button("💾 Registrar", type="primary"):
             df = st.session_state.df_cache
-            # Validación
             dup = df[(df['Planta']==planta_sel) & (df['Fecha']==pd.to_datetime(fecha)) & 
                      (df['Inversor']==f"Inv-{inv}") & (df['Caja']==f"CB-{cja}") & 
                      (df['String']==f"Str-{str_n}")] if not df.empty else pd.DataFrame()
-            if not dup.empty: st.error("Duplicado detectado.")
+            if not dup.empty: st.error("Duplicado.")
             else:
                 new_data = {'Fecha': pd.to_datetime(fecha), 'Planta': planta_sel, 
                             'Inversor': f"Inv-{inv}", 'Caja': f"CB-{cja}", 'String': f"Str-{str_n}", 
                             'Polaridad': pol, 'Amperios': amp, 'Nota': nota}
                 guardar_registro_nuevo(new_data)
                 st.session_state.df_cache = cargar_datos()
-                st.success("Registrado.")
-                st.rerun()
+                st.success("OK"); st.rerun()
 
     st.markdown("### 📋 Últimos Eventos")
     df_show = st.session_state.df_cache.copy()
@@ -210,108 +194,88 @@ with tab1:
         df_p = df_show[df_show['Planta'] == planta_sel]
         if not df_p.empty:
             for i, row in df_p.tail(5).sort_index(ascending=False).iterrows():
-                # Formato Tarjeta
+                # Cálculo de ID en vuelo para mostrar
+                id_tec = crear_id_tecnico(row)
                 cols = st.columns([1, 2, 2, 1, 1, 1])
                 cols[0].write(f"📅 {row['Fecha'].strftime('%d/%m')}")
                 cols[1].write(f"**{row['Inversor']} > {row['Caja']}**")
-                cols[2].write(f"🔌 {row['String']} ({row['Polaridad']})")
-                cols[3].write(f"⚡ **{row['Amperios']} A**")
-                
-                # --- CORRECCION DEL ERROR VISUAL ---
-                # Antes: cols[4].info(...) if ... (Esto provocaba el texto raro)
-                # Ahora: Estructura if limpia
-                if row['Nota']:
-                    cols[4].info(row['Nota'])
-                
+                cols[2].write(f"🔌 {id_tec}") # Aquí mostramos el ID técnico
+                cols[3].write(f"⚡ {row['Amperios']}A")
+                if row['Nota']: cols[4].info(row['Nota'])
                 if cols[5].button("🗑️", key=f"del_{i}"): borrar_registro_google(i); st.rerun()
         else: st.info("Sin registros.")
 
-# --- PESTAÑA 2: REPORTES ---
 with tab2:
     st.header("Laboratorio de Datos")
     df = st.session_state.df_cache
     if not df.empty:
-        # FILTROS DE TIEMPO
         col_filtro, col_kpi = st.columns([1, 3])
         with col_filtro:
-            st.markdown("⏱️ **Periodo de Análisis**")
-            filtro_t = st.radio("Ver:", ["Todo", "Este Mes", "Último Trimestre", "Último Semestre"])
-            
-            # Lógica de Filtro
+            st.markdown("⏱️ **Filtros**")
+            filtro_t = st.radio("Periodo:", ["Todo", "Este Mes", "Último Trimestre"])
             df_f = df[df['Planta'] == planta_sel].copy()
+            
+            # Crear Columna ID Técnico para todo el DataFrame filtrado
+            df_f['ID_Tecnico'] = df_f.apply(crear_id_tecnico, axis=1)
+            df_f['Equipo_Full'] = df_f['Inversor'] + " > " + df_f['Caja']
+
             hoy = pd.Timestamp.now()
             if filtro_t == "Este Mes": df_f = df_f[df_f['Fecha'].dt.month == hoy.month]
             elif filtro_t == "Último Trimestre": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=90))]
-            elif filtro_t == "Último Semestre": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=180))]
         
-        # KPIs
         with col_kpi:
             k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Fallas Totales", len(df_f))
-            k2.metric("Amperaje Promedio", f"{df_f['Amperios'].mean():.1f} A")
-            
-            top_eq = (df_f['Inversor'] + " " + df_f['Caja']).mode()
-            k3.metric("Equipo Crítico", top_eq[0] if not top_eq.empty else "-")
-            
-            # Cálculo de recurrencia máxima
-            if not df_f.empty:
-                df_f['ID_Full'] = df_f['Inversor'] + " > " + df_f['Caja']
-                max_rec = df_f['ID_Full'].value_counts().max()
-                k4.metric("Máx. Repeticiones", max_rec)
+            k1.metric("Fallas", len(df_f))
+            k2.metric("Promedio A", f"{df_f['Amperios'].mean():.1f}")
+            top = df_f['Equipo_Full'].mode()
+            k3.metric("Equipo Crítico", top[0] if not top.empty else "-")
+            k4.metric("Máx. Repetición", df_f['Equipo_Full'].value_counts().max() if not df_f.empty else 0)
 
         st.divider()
 
-        # GRAFICO 1: CRONOLOGÍA DE FALLAS (SCATTER)
-        st.subheader("1. Cronología de Fallas (Repetición en el Tiempo)")
-        st.caption("Detecta patrones visuales: ¿Se repite el mismo fusible en corto tiempo?")
-        if not df_f.empty:
-            fig_timeline = px.scatter(df_f, x="Fecha", y="ID_Full", color="Polaridad", size="Amperios",
-                                      title="Distribución Temporal de Fallas",
-                                      hover_data=['String', 'Nota'],
-                                      height=400)
-            st.plotly_chart(fig_timeline, use_container_width=True)
-
-        # GRAFICO 2: PARETO
-        c_g1, c_g2 = st.columns(2)
+        # --- GRAFICO 1: RANKING CON TOOLTIP MEJORADO ---
+        c_g1, c_g2 = st.columns([2, 1])
         with c_g1:
-            st.subheader("2. Ranking de Equipos")
-            conteo = df_f['ID_Full'].value_counts().reset_index()
-            conteo.columns = ['Equipo', 'Fallas']
-            st.plotly_chart(px.bar(conteo, x='Fallas', y='Equipo', orientation='h', color='Fallas'), use_container_width=True)
-        
+            st.subheader("📊 Ranking de Fallas (Hover para detalle)")
+            if not df_f.empty:
+                # Agrupamos para contar fallas por Equipo, pero guardamos la lista de Strings únicos
+                df_rank = df_f.groupby('Equipo_Full').agg(
+                    Fallas=('Fecha', 'count'),
+                    Detalle_Strings=('ID_Tecnico', lambda x: list(x)) # Crea lista de strings
+                ).reset_index().sort_values('Fallas', ascending=True)
+                
+                fig = px.bar(df_rank, x='Fallas', y='Equipo_Full', orientation='h', 
+                             hover_data=['Detalle_Strings'], # Esto muestra la lista al pasar el mouse
+                             text='Fallas')
+                st.plotly_chart(fig, use_container_width=True)
+
         with c_g2:
-            st.subheader("3. Distribución Polaridad")
+            st.subheader("Distribución")
             st.plotly_chart(px.pie(df_f, names='Polaridad', hole=0.4), use_container_width=True)
 
+        # --- TABLA DETALLADA (SOLICITUD RESTAURACIÓN) ---
         st.divider()
+        st.subheader("📋 Detalle de Operaciones (Base de Datos)")
         
-        # ZONA DE ANÁLISIS TÉCNICO
-        st.subheader("📝 Generación de Informe Técnico")
-        
-        col_txt1, col_txt2 = st.columns(2)
-        
-        # Análisis Automático
-        with col_txt1:
-            st.info("🤖 Análisis IA (Preliminar)")
-            analisis_ia = generar_analisis_auto(df_f)
-            st.write(analisis_ia)
-            if st.button("Copiar al Informe Manual"):
-                st.session_state['texto_informe'] = analisis_ia
-        
-        # Análisis Manual
-        with col_txt2:
-            st.warning("👷 Análisis del Ingeniero (Para el Excel)")
-            texto_final = st.text_area("Edita tus conclusiones aquí:", 
-                                       value=st.session_state.get('texto_informe', ''), 
-                                       height=150,
-                                       key='texto_informe_input')
+        # Seleccionamos y renombramos columnas para que se vea profesional
+        tabla_final = df_f[['Fecha', 'ID_Tecnico', 'Inversor', 'Caja', 'String', 'Polaridad', 'Amperios', 'Nota']].sort_values('Fecha', ascending=False)
+        st.dataframe(tabla_final, use_container_width=True, hide_index=True)
 
-        # BOTÓN DESCARGA
-        excel_data = generar_excel_profesional(df_f, planta_sel, filtro_t, texto_final)
-        if excel_data:
-            st.download_button("📥 Descargar Informe Oficial (Excel)", excel_data, 
-                               f"Informe_{planta_sel}_{filtro_t}.xlsx", 
-                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
-                               type="primary")
-            
-    else: st.info("Selecciona una planta con datos para ver el laboratorio.")
+        # ZONA INFORMES
+        st.divider()
+        st.subheader("📝 Exportación")
+        col_txt1, col_txt2 = st.columns(2)
+        with col_txt1:
+            st.info("🤖 IA Analysis")
+            ia_text = generar_analisis_auto(df_f)
+            st.write(ia_text)
+            if st.button("Usar IA"): st.session_state['texto_informe'] = ia_text
+        with col_txt2:
+            texto_final = st.text_area("Conclusiones:", value=st.session_state.get('texto_informe', ''), height=100)
+
+        excel = generar_excel_profesional(df_f, planta_sel, filtro_t, texto_final)
+        if excel:
+            st.download_button("📥 Descargar Reporte Completo", excel, f"Reporte_{planta_sel}.xlsx", 
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+
+    else: st.info("Sin datos para mostrar análisis.")
