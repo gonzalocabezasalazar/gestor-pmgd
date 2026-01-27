@@ -50,6 +50,17 @@ def cargar_datos_fusibles():
         return df
     except: return pd.DataFrame()
 
+def cargar_datos_mediciones():
+    sheet = conectar_google_sheets("DB_MEDICIONES")
+    try:
+        data = sheet.get_all_records()
+        if not data: return pd.DataFrame()
+        df = pd.DataFrame(data)
+        if 'Fecha' in df.columns: df['Fecha'] = pd.to_datetime(df['Fecha'])
+        if 'Amperios' in df.columns: df['Amperios'] = pd.to_numeric(df['Amperios'], errors='coerce').fillna(0)
+        return df
+    except: return pd.DataFrame()
+
 def guardar_falla(registro):
     sheet = conectar_google_sheets("Sheet1")
     reg = [registro['Fecha'].strftime("%Y-%m-%d"), registro['Planta'], registro['Inversor'],
@@ -74,6 +85,7 @@ def guardar_medicion_masiva(df_mediciones, planta, equipo, fecha):
         fila = [fecha_str, planta, equipo, row['String ID'], row['Amperios']]
         filas_para_subir.append(fila)
     sheet.append_rows(filas_para_subir)
+    st.cache_data.clear()
     st.toast(f"✅ Guardados {len(filas_para_subir)} strings correctamente")
 
 # --- MOTORES DE INTELIGENCIA ---
@@ -97,7 +109,6 @@ def generar_analisis_auto(df):
     if pos > neg * 1.5: trend = "PREDOMINANCIA POSITIVA"
     if neg > pos * 1.5: trend = "PREDOMINANCIA NEGATIVA"
     promedio_amp = df['Amperios'].mean()
-    
     return (f"Resumen Ejecutivo:\n"
             f"- Volumen de Fallas: {total} eventos registrados.\n"
             f"- Equipo Critico: {critico} (Mayor recurrencia).\n"
@@ -125,7 +136,7 @@ def generar_diagnostico_mediciones(df):
             
     return estado, detalle, color_msg, cuerdas_cero + cuerdas_bajas['String ID'].tolist()
 
-# --- GENERADOR DE PDF (CORREGIDO PARA NUBE) ---
+# --- GENERADOR DE PDF BLINDADO ---
 class PDF(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 15)
@@ -137,29 +148,28 @@ class PDF(FPDF):
         self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
 
 def clean_text(text):
+    """Limpia caracteres incompatibles con PDF standard (Latin-1)"""
     if not isinstance(text, str): return str(text)
-    replacements = {'•': '-', '—': '-', '–': '-', '“': '"', '”': '"', '‘': "'", '’': "'", 'ñ': 'n', 'Ñ': 'N', 'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'Á': 'A', 'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U'}
+    replacements = {
+        '•': '-', '—': '-', '–': '-', '“': '"', '”': '"', 
+        '‘': "'", '’': "'", 'ñ': 'n', 'Ñ': 'N', 'á': 'a', 
+        'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u', 'Á': 'A', 
+        'É': 'E', 'Í': 'I', 'Ó': 'O', 'Ú': 'U', '⚡': 'Energia: '
+    }
     for k, v in replacements.items(): text = text.replace(k, v)
     return text.encode('latin-1', 'ignore').decode('latin-1')
 
-# 1. PDF GERENCIAL (FALLAS)
 def crear_pdf_gerencial(planta, periodo, kpis, ia_text, engineer_text, fig_rank, fig_pie):
     pdf = PDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
     
-    pdf.set_font("Arial", "B", 12)
-    pdf.cell(0, 10, clean_text(f"Reporte Gerencial: {planta} | {periodo}"), 0, 1, 'L')
-    pdf.set_font("Arial", "", 10)
-    pdf.cell(0, 10, clean_text(f"Fecha: {pd.Timestamp.now().strftime('%d-%m-%Y')}"), 0, 1, 'L')
-    pdf.ln(5)
+    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"Reporte Gerencial: {planta} | {periodo}"), 0, 1, 'L')
+    pdf.set_font("Arial", "", 10); pdf.cell(0, 10, clean_text(f"Fecha: {pd.Timestamp.now().strftime('%d-%m-%Y')}"), 0, 1, 'L'); pdf.ln(5)
     
     pdf.set_fill_color(230, 240, 255); pdf.rect(10, pdf.get_y(), 190, 25, 'F')
-    pdf.set_font("Arial", "B", 11)
-    pdf.cell(45, 10, "Total Fallas", 0, 0, 'C'); pdf.cell(45, 10, "Equipo Critico", 0, 0, 'C'); pdf.cell(45, 10, "Promedio (A)", 0, 0, 'C'); pdf.cell(45, 10, "Repeticiones", 0, 1, 'C')
-    pdf.set_font("Arial", "", 12)
-    pdf.cell(45, 10, str(kpis['total']), 0, 0, 'C'); pdf.cell(45, 10, clean_text(str(kpis['critico'])), 0, 0, 'C'); pdf.cell(45, 10, str(kpis['promedio']), 0, 0, 'C'); pdf.cell(45, 10, str(kpis['repes']), 0, 1, 'C')
-    pdf.ln(10)
+    pdf.set_font("Arial", "B", 11); pdf.cell(45, 10, "Total Fallas", 0, 0, 'C'); pdf.cell(45, 10, "Equipo Critico", 0, 0, 'C'); pdf.cell(45, 10, "Promedio (A)", 0, 0, 'C'); pdf.cell(45, 10, "Repeticiones", 0, 1, 'C')
+    pdf.set_font("Arial", "", 12); pdf.cell(45, 10, str(kpis['total']), 0, 0, 'C'); pdf.cell(45, 10, clean_text(str(kpis['critico'])), 0, 0, 'C'); pdf.cell(45, 10, str(kpis['promedio']), 0, 0, 'C'); pdf.cell(45, 10, str(kpis['repes']), 0, 1, 'C'); pdf.ln(10)
     
     pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("Diagnostico Automatico (IA)"), 0, 1, 'L')
     pdf.set_font("Arial", "", 10); pdf.multi_cell(0, 7, clean_text(ia_text)); pdf.ln(5)
@@ -173,81 +183,63 @@ def crear_pdf_gerencial(planta, periodo, kpis, ia_text, engineer_text, fig_rank,
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t2: fig_pie.write_image(t2.name, width=400, height=300); pdf.image(t2.name, x=50, w=100)
     except: pass
     
-    # CORRECCIÓN PARA NUBE: dest='S' + encode
-    return pdf.output(dest='S').encode('latin-1')
+    return bytes(pdf.output())
 
-# 2. PDF MEDICIONES CON FOTOS Y SIN BUGS VISUALES
 def crear_pdf_mediciones(planta, equipo, fecha, df_data, kpis, comentarios_gerencia, fig_box, evidencias):
     pdf = PDF()
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
 
     pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"REPORTE DE MEDICION DE CAMPO (Curvas I-V)"), 0, 1, 'C'); pdf.ln(5)
-    pdf.set_font("Arial", "", 10)
-    pdf.cell(0, 8, clean_text(f"Planta: {planta}"), 0, 1)
-    pdf.cell(0, 8, clean_text(f"Equipo Auditado: {equipo}"), 0, 1)
-    pdf.cell(0, 8, clean_text(f"Fecha Medicion: {fecha}"), 0, 1)
-    pdf.ln(5)
+    pdf.set_font("Arial", "", 10); pdf.cell(0, 8, clean_text(f"Planta: {planta}"), 0, 1); pdf.cell(0, 8, clean_text(f"Equipo Auditado: {equipo}"), 0, 1); pdf.cell(0, 8, clean_text(f"Fecha Medicion: {fecha}"), 0, 1); pdf.ln(5)
 
     pdf.set_fill_color(240, 240, 240); pdf.rect(10, pdf.get_y(), 190, 20, 'F')
-    pdf.set_font("Arial", "B", 11)
-    pdf.cell(63, 10, "Promedio Caja", 0, 0, 'C'); pdf.cell(63, 10, "Dispersion (%)", 0, 0, 'C'); pdf.cell(63, 10, "Estado Global", 0, 1, 'C')
-    pdf.set_font("Arial", "", 12)
-    pdf.cell(63, 10, f"{kpis['promedio']}", 0, 0, 'C')
+    pdf.set_font("Arial", "B", 11); pdf.cell(63, 10, "Promedio Caja", 0, 0, 'C'); pdf.cell(63, 10, "Dispersion (%)", 0, 0, 'C'); pdf.cell(63, 10, "Estado Global", 0, 1, 'C')
+    pdf.set_font("Arial", "", 12); pdf.cell(63, 10, f"{kpis['promedio']}", 0, 0, 'C')
     if float(kpis['dispersion'].replace('%','')) > 5: pdf.set_text_color(200, 0, 0)
-    pdf.cell(63, 10, f"{kpis['dispersion']}", 0, 0, 'C'); pdf.set_text_color(0,0,0)
-    pdf.cell(63, 10, clean_text(kpis['estado']), 0, 1, 'C'); pdf.ln(10)
+    pdf.cell(63, 10, f"{kpis['dispersion']}", 0, 0, 'C'); pdf.set_text_color(0,0,0); pdf.cell(63, 10, clean_text(kpis['estado']), 0, 1, 'C'); pdf.ln(10)
 
-    pdf.set_font("Arial", "B", 12); pdf.set_text_color(0, 50, 150); pdf.cell(0, 10, clean_text("Informe a Gerencia (Observaciones)"), 0, 1, 'L')
-    pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 10); pdf.multi_cell(0, 6, clean_text(comentarios_gerencia) if comentarios_gerencia else "Sin observaciones criticas reportadas."); pdf.ln(10)
+    pdf.set_font("Arial", "B", 12); pdf.set_text_color(0, 50, 150); pdf.cell(0, 10, clean_text("Informe a Gerencia"), 0, 1, 'L')
+    pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 10); pdf.multi_cell(0, 6, clean_text(comentarios_gerencia) if comentarios_gerencia else "Sin observaciones."); pdf.ln(10)
 
     try:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t1: 
-            fig_box.write_image(t1.name, width=700, height=350)
-            pdf.image(t1.name, x=10, w=190)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t1: fig_box.write_image(t1.name, width=700, height=350); pdf.image(t1.name, x=10, w=190)
     except: pass
     pdf.ln(5)
 
-    # Tabla de Datos - CORREGIDO BUCLE PARA ELIMINAR "FALSE"
-    pdf.set_font("Arial", "B", 10)
-    pdf.cell(40, 8, "String ID", 1, 0, 'C', True)
-    pdf.cell(40, 8, "Corriente (A)", 1, 0, 'C', True)
-    pdf.cell(60, 8, "Estado", 1, 1, 'C', True)
-    pdf.set_font("Arial", "", 10)
+    pdf.set_font("Arial", "B", 10); pdf.cell(40, 8, "String ID", 1, 0, 'C', True); pdf.cell(40, 8, "Corriente (A)", 1, 0, 'C', True); pdf.cell(60, 8, "Estado", 1, 1, 'C', True); pdf.set_font("Arial", "", 10)
     
+    # CORRECCIÓN DE "FALSE" FANTASMA
     for index, row in df_data.iterrows():
-        pdf.ln(8) # Salto de línea manual en lugar de 1,1
         pdf.cell(40, 8, clean_text(str(row['String ID'])), 1, 0, 'C')
         pdf.cell(40, 8, f"{row['Amperios']:.1f} A", 1, 0, 'C')
         
         estado_str = "OK"
         if row['Estado'] == 'CRÍTICO': 
             pdf.set_text_color(200, 0, 0)
-            estado_str = "CRITICO / BAJO"
-        else: 
-            pdf.set_text_color(0, 100, 0)
+            estado_str = "CRITICO"
+        else: pdf.set_text_color(0, 100, 0)
         
-        pdf.cell(60, 8, estado_str, 1, 0, 'C')
+        pdf.cell(60, 8, estado_str, 1, 1, 'C')
         pdf.set_text_color(0, 0, 0)
-        
-    # --- ANEXO FOTOGRÁFICO ---
+
     if evidencias:
-        pdf.add_page()
-        pdf.set_font("Arial", "B", 14)
-        pdf.cell(0, 10, clean_text("ANEXO FOTOGRAFICO (EVIDENCIA)"), 0, 1, 'C')
-        pdf.ln(10)
+        pdf.add_page(); pdf.set_font("Arial", "B", 14); pdf.cell(0, 10, clean_text("ANEXO FOTOGRAFICO"), 0, 1, 'C'); pdf.ln(10)
         for img_file in evidencias:
             try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tf:
-                    tf.write(img_file.getbuffer())
-                    pdf.image(tf.name, w=170) 
-                    pdf.ln(5)
-            except Exception as e:
-                pdf.set_font("Arial", "I", 8)
-                pdf.cell(0, 10, f"Error imagen: {e}", 0, 1)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tf: tf.write(img_file.getbuffer()); pdf.image(tf.name, w=170); pdf.ln(5)
+            except: pass
+            
+    return bytes(pdf.output())
 
-    # CORRECCIÓN PARA NUBE
-    return pdf.output(dest='S').encode('latin-1')
+# 3. EXCEL MAESTRO
+def generar_excel_maestro_mediciones(df, planta):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, sheet_name='Base_Datos_Completa', index=False)
+        summary = df.groupby(['Equipo']).agg(Strings=('String_ID','count'), Promedio=('Amperios','mean')).reset_index()
+        summary.to_excel(writer, sheet_name='Resumen_Por_Caja', index=False)
+    return output.getvalue()
 
 # --- EXCEL PRO ---
 def generar_excel_pro(df_reporte, planta, periodo, comentarios):
@@ -271,7 +263,9 @@ def generar_excel_pro(df_reporte, planta, periodo, comentarios):
     except: return None
     return output.getvalue()
 
+# --- CACHÉ ---
 if 'df_cache' not in st.session_state: st.session_state.df_cache = cargar_datos_fusibles()
+if 'df_med_cache' not in st.session_state: st.session_state.df_med_cache = cargar_datos_mediciones()
 
 PLANTAS_DEF = ["El Roble", "Las Rojas"]
 def cargar_plantas():
@@ -283,7 +277,10 @@ plantas = cargar_plantas()
 
 # ================= INTERFAZ =================
 st.title("⚡ Gestor PMGD: Ingeniería & Análisis")
-if st.button("🔄 Sincronizar Datos"): st.session_state.df_cache = cargar_datos_fusibles(); st.rerun()
+if st.button("🔄 Sincronizar Datos"): 
+    st.session_state.df_cache = cargar_datos_fusibles()
+    st.session_state.df_med_cache = cargar_datos_mediciones()
+    st.rerun()
 
 with st.sidebar:
     st.header("Parámetros")
@@ -291,7 +288,7 @@ with st.sidebar:
     with st.expander("🛠️ Admin"):
         if st.button("Agregar Planta") and (nueva := st.text_input("Nombre")): plantas.append(nueva); json.dump(plantas, open("plantas_config.json",'w')); st.rerun()
 
-tab1, tab2, tab3 = st.tabs(["📝 Registro Fallas", "⚡ Mediciones de Campo", "📊 Estadísticas & Informe"])
+tab1, tab2, tab3 = st.tabs(["📝 Registro Fallas", "⚡ Mediciones de Campo", "📊 Centro de Informes"])
 
 # --- TAB 1 ---
 with tab1:
@@ -325,7 +322,7 @@ with tab1:
 
 # --- TAB 2 ---
 with tab2:
-    st.subheader("⚡ Levantamiento de Curvas I-V (Simulado)")
+    st.subheader("⚡ Levantamiento de Curvas I-V")
     c_conf1, c_conf2, c_conf3 = st.columns(3)
     with c_conf1: m_inv = st.number_input("Inversor Auditado", 1, 50, 1, key="m_inv"); m_caja = st.number_input("Caja Auditada", 1, 100, 1, key="m_caja")
     with c_conf2: n_strings = st.number_input("Cant. Strings", 4, 32, 12, step=2); m_fecha = st.date_input("Fecha Medición", pd.Timestamp.now(), key="m_fecha")
@@ -346,7 +343,6 @@ with tab2:
             prom = vals_clean.mean(); dev = vals_clean.std(); cv = (dev/prom)*100 if prom > 0 else 0
             k1, k2 = st.columns(2); k1.metric("Promedio", f"{prom:.2f} A"); k2.metric("Dispersión", f"{cv:.1f}%", delta_color="inverse" if cv > 5 else "normal")
             estado_txt, detalle_ia, color_box, strings_malos = generar_diagnostico_mediciones(df_editado)
-            
             if color_box == "error": st.error(f"🚨 **{estado_txt}**"); st.markdown(detalle_ia)
             else: st.success(f"✅ **{estado_txt}**"); st.caption(detalle_ia)
             
@@ -356,101 +352,85 @@ with tab2:
             fig_box.add_hline(y=prom, line_dash="dash", line_color="orange")
             st.plotly_chart(fig_box, use_container_width=True)
             
-            st.divider()
+            st.divider(); st.markdown("#### 📤 Reporte Individual (Caja)")
+            comentarios_gerencia = st.text_area("Comentarios a Gerencia:", placeholder="Observaciones...", height=100)
+            evidencias = st.file_uploader("📸 Evidencia", accept_multiple_files=True, type=['png', 'jpg', 'jpeg'])
             
-            # --- SECCIÓN DE REPORTE Y EVIDENCIA (BANNER) ---
-            st.markdown("#### 📤 Reporte de Terreno & Evidencia")
-            comentarios_gerencia = st.text_area("Comentarios a Gerencia:", placeholder="Ej: Fusibles reemplazados, conector dañado...", height=100)
-            
-            evidencias = st.file_uploader("📸 Adjuntar Evidencia (Fotos/Cámara)", accept_multiple_files=True, type=['png', 'jpg', 'jpeg'], help="Sube fotos del tablero o fusibles dañados")
-            if evidencias:
-                st.caption(f"{len(evidencias)} fotos adjuntas para el PDF.")
-                cols_img = st.columns(min(len(evidencias), 4))
-                for i, img in enumerate(evidencias[:4]): cols_img[i].image(img, use_container_width=True)
-
             c_btn1, c_btn2 = st.columns(2)
             with c_btn1:
-                if st.button("💾 Guardar en Base de Datos", type="primary"): guardar_medicion_masiva(df_editado, planta_sel, f"Inv-{m_inv} > CB-{m_caja}", m_fecha)
+                if st.button("💾 Guardar en Base de Datos", type="primary"): 
+                    guardar_medicion_masiva(df_editado, planta_sel, f"Inv-{m_inv} > CB-{m_caja}", m_fecha)
             with c_btn2:
                 kpis_pdf = {'promedio': f"{prom:.1f} A", 'dispersion': f"{cv:.1f}%", 'estado': estado_txt}
-                # Aquí llamamos a la función corregida
                 pdf_bytes_med = crear_pdf_mediciones(planta_sel, f"Inv-{m_inv} > CB-{m_caja}", m_fecha.strftime("%d-%m-%Y"), df_editado, kpis_pdf, comentarios_gerencia, fig_box, evidencias)
                 st.download_button("📄 Descargar PDF de la Caja", pdf_bytes_med, f"Medicion_CB_{m_caja}.pdf", "application/pdf")
         else: st.info("Ingresa datos.")
 
-# --- TAB 3: ESTADÍSTICAS ---
+# --- TAB 3 ---
 with tab3:
-    df = st.session_state.df_cache
-    if not df.empty:
-        col_filtro, col_kpi = st.columns([1, 3])
-        with col_filtro:
-            st.markdown("⏱️ **Filtros**")
-            filtro_t = st.radio("Periodo:", ["Todo", "Este Mes", "Último Trimestre", "Último Semestre", "Último Año", "Mes Específico"])
-            df_f = df[df['Planta'] == planta_sel].copy()
-            df_f['ID_Tecnico'] = df_f.apply(crear_id_tecnico, axis=1)
-            df_f['Equipo_Full'] = df_f['Inversor'] + " > " + df_f['Caja']
-            hoy = pd.Timestamp.now()
-            if filtro_t == "Este Mes": df_f = df_f[df_f['Fecha'].dt.month == hoy.month]
-            elif filtro_t == "Último Trimestre": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=90))]
-            elif filtro_t == "Último Semestre": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=180))]
-            elif filtro_t == "Último Año": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=365))]
-            elif filtro_t == "Mes Específico":
-                c_m, c_a = st.columns(2)
-                mm = c_m.selectbox("Mes", range(1,13), index=hoy.month-1)
-                aa = c_a.number_input("Año", 2023, 2030, hoy.year)
-                df_f = df_f[(df_f['Fecha'].dt.month == mm) & (df_f['Fecha'].dt.year == aa)]
+    st.header("📊 Centro de Informes y Estadísticas")
+    modo_informe = st.radio("Seleccionar Tipo de Informe:", ["📉 Reporte de Fallas (Fusibles)", "⚡ Reporte de Mediciones (Protocolos)"], horizontal=True)
+    st.divider()
 
-        with col_kpi:
-            kpi_data = {
-                'total': len(df_f),
-                'promedio': f"{df_f['Amperios'].mean():.1f} A",
-                'critico': df_f['Equipo_Full'].mode()[0] if not df_f['Equipo_Full'].mode().empty else "-",
-                'repes': df_f['Equipo_Full'].value_counts().max() if not df_f.empty else 0
-            }
-            k1, k2, k3, k4 = st.columns([1, 1, 1.5, 1])
-            k1.metric("Fallas", kpi_data['total'])
-            k2.metric("Promedio", kpi_data['promedio'])
-            k3.metric("Equipo Crítico", kpi_data['critico'])
-            k4.metric("Repeticiones", kpi_data['repes'])
+    if "Fallas" in modo_informe:
+        df = st.session_state.df_cache
+        if not df.empty:
+            col_filtro, col_kpi = st.columns([1, 3])
+            with col_filtro:
+                st.markdown("⏱️ **Filtros**")
+                filtro_t = st.radio("Periodo:", ["Todo", "Este Mes", "Último Trimestre", "Último Año", "Mes Específico"])
+                df_f = df[df['Planta'] == planta_sel].copy()
+                df_f['ID_Tecnico'] = df_f.apply(crear_id_tecnico, axis=1)
+                df_f['Equipo_Full'] = df_f['Inversor'] + " > " + df_f['Caja']
+                hoy = pd.Timestamp.now()
+                if filtro_t == "Este Mes": df_f = df_f[df_f['Fecha'].dt.month == hoy.month]
+                elif filtro_t == "Último Trimestre": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=90))]
+                elif filtro_t == "Último Año": df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=365))]
+                elif filtro_t == "Mes Específico":
+                    c_m, c_a = st.columns(2)
+                    mm = c_m.selectbox("Mes", range(1,13), index=hoy.month-1)
+                    aa = c_a.number_input("Año", 2023, 2030, hoy.year)
+                    df_f = df_f[(df_f['Fecha'].dt.month == mm) & (df_f['Fecha'].dt.year == aa)]
 
-        st.divider()
-        st.subheader("Análisis Visual")
-        c1, c2, c3 = st.columns(3)
-        l_cfg = dict(margin=dict(l=10, r=10, t=30, b=10), height=350)
-        fig_rank = None; fig_pie = None
+            with col_kpi:
+                kpi_data = {'total': len(df_f), 'promedio': f"{df_f['Amperios'].mean():.1f} A", 'critico': df_f['Equipo_Full'].mode()[0] if not df_f['Equipo_Full'].mode().empty else "-", 'repes': df_f['Equipo_Full'].value_counts().max() if not df_f.empty else 0}
+                k1, k2, k3, k4 = st.columns([1, 1, 1.5, 1])
+                k1.metric("Fallas", kpi_data['total']); k2.metric("Promedio", kpi_data['promedio']); k3.metric("Equipo Crítico", kpi_data['critico']); k4.metric("Repeticiones", kpi_data['repes'])
 
-        with c1:
-            if not df_f.empty:
-                df_rk = df_f.groupby('Equipo_Full').agg(Fallas=('Fecha','count'), Str=('ID_Tecnico',lambda x:list(x))).reset_index().sort_values('Fallas',ascending=True)
-                fig_rank = px.bar(df_rk, x='Fallas', y='Equipo_Full', orientation='h', color='Fallas', text='Fallas', title="Ranking Fallas")
-                fig_rank.update_layout(**l_cfg, showlegend=False); st.plotly_chart(fig_rank, use_container_width=True)
-        with c2:
-            if not df_f.empty:
-                fig_pie = px.pie(df_f, names='Inversor', hole=0.4, title="Inversores", color_discrete_sequence=px.colors.qualitative.Prism)
-                fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-                fig_pie.update_layout(**l_cfg, showlegend=False); st.plotly_chart(fig_pie, use_container_width=True)
-        with c3:
-            if not df_f.empty:
-                fig_pol = px.pie(df_f, names='Polaridad', hole=0.4, title="Polaridad", color_discrete_sequence=['#EF553B','#636EFA'])
-                fig_pol.update_layout(**l_cfg); st.plotly_chart(fig_pol, use_container_width=True)
+            st.subheader("Análisis Visual")
+            c1, c2, c3 = st.columns(3)
+            # FIX: Quitamos showlegend=True del layout general para evitar conflicto
+            l_cfg = dict(margin=dict(l=10, r=10, t=30, b=10), height=350)
+            fig_rank=None; fig_pie=None
+            with c1:
+                if not df_f.empty: 
+                    df_rk = df_f.groupby('Equipo_Full').agg(Fallas=('Fecha','count')).reset_index().sort_values('Fallas',ascending=True)
+                    fig_rank = px.bar(df_rk, x='Fallas', y='Equipo_Full', orientation='h', color='Fallas', title="Ranking Fallas"); fig_rank.update_layout(**l_cfg, showlegend=False); st.plotly_chart(fig_rank, use_container_width=True)
+            with c2:
+                if not df_f.empty: 
+                    fig_pie = px.pie(df_f, names='Inversor', hole=0.4, title="Inversores", color_discrete_sequence=px.colors.qualitative.Prism); fig_pie.update_layout(**l_cfg, showlegend=False); st.plotly_chart(fig_pie, use_container_width=True)
+            with c3:
+                if not df_f.empty: fig_pol = px.pie(df_f, names='Polaridad', hole=0.4, title="Polaridad", color_discrete_sequence=['#EF553B','#636EFA']); fig_pol.update_layout(**l_cfg); st.plotly_chart(fig_pol, use_container_width=True)
 
-        st.divider(); st.subheader("🧠 Centro de Análisis")
-        c_ia, c_man = st.columns(2)
-        txt_ia = generar_analisis_auto(df_f)
-        with c_ia:
-            st.info("🤖 Análisis IA"); st.markdown(txt_ia)
-            if st.button("Copiar IA al Informe 👉"): st.session_state['texto_informe'] = txt_ia
-        with c_man:
-            st.warning("📝 Comentarios del Ingeniero")
-            txt_final = st.text_area("Edita tus conclusiones:", value=st.session_state.get('texto_informe', ''), height=200)
+            c_ia, c_man = st.columns(2); txt_ia = generar_analisis_auto(df_f)
+            with c_ia: st.info("🤖 Análisis IA"); st.markdown(txt_ia)
+            with c_man: txt_final = st.text_area("Edita tus conclusiones:", value=st.session_state.get('texto_informe', ''), height=150)
 
-        st.divider(); st.subheader("📤 Exportación de Informes"); col_pdf, col_xls = st.columns(2)
-        with col_pdf:
-            if not df_f.empty and fig_rank and fig_pie:
-                pdf_bytes = crear_pdf_gerencial(planta_sel, filtro_t, kpi_data, txt_ia, txt_final, fig_rank, fig_pie)
-                st.download_button("📄 Descargar PDF Gerencial", pdf_bytes, f"Reporte_Gerencial_{planta_sel}.pdf", "application/pdf", type="primary")
-            else: st.info("Faltan datos para generar el PDF.")
-        with col_xls:
-            excel = generar_excel_pro(df_f, planta_sel, filtro_t, txt_final)
-            if excel: st.download_button("📊 Descargar Excel (Data)", excel, f"Data_{planta_sel}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    else: st.info("Sin datos.")
+            col_pdf, col_xls = st.columns(2)
+            with col_pdf:
+                if not df_f.empty and fig_rank and fig_pie: 
+                    pdf_bytes = crear_pdf_gerencial(planta_sel, filtro_t, kpi_data, txt_ia, txt_final, fig_rank, fig_pie)
+                    st.download_button("📄 Descargar PDF Gerencial", pdf_bytes, f"Reporte_Gerencial_{planta_sel}.pdf", "application/pdf", type="primary")
+        else: st.info("Sin datos de fallas.")
+
+    else:
+        df_med = st.session_state.df_med_cache
+        if not df_med.empty:
+            df_m_plant = df_med[df_med['Planta'] == planta_sel]
+            st.info("📊 Protocolo de Pruebas: Resumen masivo de mediciones.")
+            k1, k2 = st.columns(2)
+            k1.metric("Total Strings Medidos", len(df_m_plant)); k2.metric("Cajas Auditadas", df_m_plant['Equipo'].nunique() if 'Equipo' in df_m_plant.columns else 0)
+            st.dataframe(df_m_plant, use_container_width=True)
+            xls_data = generar_excel_maestro_mediciones(df_m_plant, planta_sel)
+            st.download_button("📥 Descargar Protocolo Excel Completo", xls_data, f"Protocolo_Mediciones_{planta_sel}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+        else: st.warning("No hay mediciones.")
