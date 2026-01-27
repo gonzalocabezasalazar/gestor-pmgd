@@ -4,4 +4,7 @@ plotly
 xlsxwriter
 openpyxl
 gspread
+
 oauth2client
+fpdf
+kaleido
