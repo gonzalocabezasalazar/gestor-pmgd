@@ -5,5 +5,6 @@ xlsxwriter
 openpyxl
 gspread
 oauth2client
-fpdf
+kaleido
+fpdf2
 kaleido
