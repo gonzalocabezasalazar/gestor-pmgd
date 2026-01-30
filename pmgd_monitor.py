@@ -12,7 +12,7 @@ from datetime import timedelta
 import numpy as np
 from fpdf import FPDF
 
-# Forzar tema plotly globalmente → ayuda mucho con colores en exportación
+# Forzar tema plotly globalmente → ayuda con colores en exportación
 pio.templates.default = "plotly"
 
 # --- CONFIGURACIÓN ---
@@ -305,7 +305,6 @@ def crear_pdf_mediciones(planta, equipo, fecha, df_data, kpis, comentarios, fig_
     pdf.set_font("Arial", "", 10)
 
     for _, r in df_data.iterrows():
-        pdf.ln(0)  # pequeño ajuste de espaciado
         pdf.cell(40, 8, clean_text(str(r['String ID'])), 1, 0, 'C')
         pdf.cell(40, 8, f"{r['Amperios']:.1f} A", 1, 0, 'C')
         st_txt = "CRITICO" if r['Estado'] == 'CRÍTICO' else "OK"
@@ -313,7 +312,7 @@ def crear_pdf_mediciones(planta, equipo, fecha, df_data, kpis, comentarios, fig_
             pdf.set_text_color(200, 0, 0)
         else:
             pdf.set_text_color(0, 100, 0)
-        pdf.cell(60, 8, st_txt, 1, 1, 'C')  # ← cambio a 1 para salto de línea
+        pdf.cell(60, 8, st_txt, 1, 1, 'C')
         pdf.set_text_color(0, 0, 0)
 
     if evidencias:
@@ -566,11 +565,15 @@ with t3:
                 hole=0.4
             )
             fpo.update_traces(textinfo='percent+label', textposition='inside')
-            fpo.update_layout(
-                **l_cfg,
-                showlegend=True,
-                height=380
-            )
+
+            # Forma segura y compatible para evitar TypeError
+            layout_cfg = l_cfg.copy()
+            layout_cfg.update({
+                'showlegend': True,
+                'height': 380
+            })
+            fpo.update_layout(**layout_cfg)
+
             c3.plotly_chart(fpo, use_container_width=True)
 
             ia = generar_analisis_auto(df_f)
