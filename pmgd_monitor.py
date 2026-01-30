@@ -14,7 +14,7 @@ from fpdf import FPDF
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Monitor Planta Solar", layout="wide", initial_sidebar_state="expanded")
 
-# --- UTILS DE FECHA (SOLUCIÓN ERROR "ESTE MES") ---
+# --- UTILS FECHA ---
 def obtener_nombre_mes(mes_num):
     meses = {1:"Enero", 2:"Febrero", 3:"Marzo", 4:"Abril", 5:"Mayo", 6:"Junio", 
              7:"Julio", 8:"Agosto", 9:"Septiembre", 10:"Octubre", 11:"Noviembre", 12:"Diciembre"}
@@ -42,7 +42,7 @@ def conectar_google_sheets(hoja_nombre):
         except: return spreadsheet.sheet1
     except Exception as e: st.error(f"Error Conexión: {e}"); st.stop()
 
-# --- GESTIÓN DE DATOS ---
+# --- DATOS ---
 def cargar_datos_fusibles():
     sheet = conectar_google_sheets("Sheet1")
     try:
@@ -136,7 +136,6 @@ def clean_text(text):
 def crear_pdf_gerencial(planta, periodo_texto, kpis, ia_text, engineer_text, fig_rank, fig_pie, fig_pol):
     pdf = PDF(); pdf.add_page(); pdf.set_auto_page_break(True, margin=15)
     
-    # TITULO CON FECHA CORRECTA
     pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"Reporte Gerencial: {planta} | {periodo_texto}"), 0, 1, 'L')
     pdf.set_font("Arial", "", 10); pdf.cell(0, 10, clean_text(f"Fecha Emision: {pd.Timestamp.now().strftime('%d-%m-%Y')}"), 0, 1, 'L'); pdf.ln(5)
     
@@ -152,29 +151,29 @@ def crear_pdf_gerencial(planta, periodo_texto, kpis, ia_text, engineer_text, fig
     
     pdf.add_page(); pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, "ANEXO GRAFICO", 0, 1, 'C'); pdf.ln(5)
     try:
-        # SOLUCIÓN PUNTO 3: FONDO BLANCO Y ALTA CALIDAD
-        img_params = dict(format="png", width=800, height=450, scale=2)
+        # AQUÍ LA CLAVE: Fondo blanco forzado al guardar
+        img_cfg = dict(format="png", width=800, height=450, scale=2)
         
         if fig_rank:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t1: 
-                fig_rank.write_image(t1.name, **img_params); pdf.image(t1.name, x=10, w=190); pdf.ln(10)
+                fig_rank.write_image(t1.name, **img_cfg); pdf.image(t1.name, x=10, w=190); pdf.ln(10)
         
         y_pos = pdf.get_y()
-        pie_params = dict(format="png", width=500, height=400, scale=2)
+        pie_cfg = dict(format="png", width=500, height=400, scale=2)
         
         if fig_pie:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t2: 
-                fig_pie.write_image(t2.name, **pie_params); pdf.image(t2.name, x=10, y=y_pos, w=90)
+                fig_pie.write_image(t2.name, **pie_cfg); pdf.image(t2.name, x=10, y=y_pos, w=90)
         if fig_pol:
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t3: 
-                fig_pol.write_image(t3.name, **pie_params); pdf.image(t3.name, x=110, y=y_pos, w=90)
+                fig_pol.write_image(t3.name, **pie_cfg); pdf.image(t3.name, x=110, y=y_pos, w=90)
     except: pass
     return bytes(pdf.output(dest='S'))
 
 def crear_pdf_mediciones(planta, equipo, fecha, df_data, kpis, comentarios, fig_box, evidencias):
     pdf = PDF(); pdf.add_page(); pdf.set_auto_page_break(True, margin=15)
     pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"REPORTE MEDICION CAMPO"), 0, 1, 'C'); pdf.ln(5)
-    pdf.set_font("Arial", "", 10); pdf.cell(0, 8, clean_text(f"Planta: {planta} | Equipo: {equipo}"), 0, 1); pdf.cell(0, 8, clean_text(f"Fecha: {fecha}"), 0, 1); pdf.ln(5)
+    pdf.set_font("Arial", "", 10); pdf.cell(0, 8, clean_text(f"Planta: {planta}"), 0, 1); pdf.cell(0, 8, clean_text(f"Equipo: {equipo}"), 0, 1); pdf.cell(0, 8, clean_text(f"Fecha: {fecha}"), 0, 1); pdf.ln(5)
     pdf.set_fill_color(240, 240, 240); pdf.rect(10, pdf.get_y(), 190, 20, 'F')
     pdf.set_font("Arial", "B", 11); pdf.cell(63, 10, "Promedio",0,0,'C'); pdf.cell(63, 10, "Dispersion",0,0,'C'); pdf.cell(63, 10, "Estado",0,1,'C')
     pdf.set_font("Arial", "", 12); pdf.cell(63, 10, f"{kpis['promedio']}",0,0,'C'); pdf.cell(63, 10, f"{kpis['dispersion']}",0,0,'C'); pdf.cell(63, 10, clean_text(kpis['estado']),0,1,'C'); pdf.ln(10)
@@ -260,9 +259,9 @@ with t2:
         else: cs.success(stt)
         
         df_ed['Estado'] = df_ed['String ID'].apply(lambda x: 'CRÍTICO' if x in bad else 'OK')
-        # SOLUCIÓN PUNTO 3: FONDO BLANCO EN WEB PARA PREVENIR ERRORES
+        # FORZADO DE FONDO BLANCO EN EL GRÁFICO WEB
         fig = px.bar(df_ed, x='String ID', y='Amperios', color='Estado', color_discrete_map={'OK':'#2e86c1','CRÍTICO':'#e74c3c'})
-        fig.update_layout(plot_bgcolor='white', paper_bgcolor='white')
+        fig.update_layout(paper_bgcolor='white', plot_bgcolor='white')
         fig.add_hline(y=prom, line_dash="dash", line_color="orange"); cs.plotly_chart(fig, use_container_width=True)
         
         st.divider(); comm = st.text_area("Notas:"); imgs = st.file_uploader("Fotos", accept_multiple_files=True)
@@ -280,17 +279,26 @@ with t3:
         if not df_f.empty:
             df_f['Equipo_Full'] = df_f['Inversor'] + " > " + df_f['Caja']
             
+            # --- FILTROS RESTAURADOS ---
             c_f, c_k = st.columns([1,3])
             with c_f:
                 st.markdown("⏱️ **Filtros**")
-                filtro_t = st.radio("Periodo:", ["Todo", "Este Mes", "Mes Específico"])
+                filtro_t = st.radio("Periodo:", ["Todo", "Este Mes", "Último Trimestre", "Último Semestre", "Último Año", "Mes Específico"])
                 hoy = pd.Timestamp.now()
-                # SOLUCIÓN PUNTO 2: TEXTO FECHA DINÁMICO
                 fecha_texto = "Histórico Completo"
                 
                 if filtro_t == "Este Mes": 
                     df_f = df_f[df_f['Fecha'].dt.month == hoy.month]
                     fecha_texto = f"{obtener_nombre_mes(hoy.month)} {hoy.year}"
+                elif filtro_t == "Último Trimestre":
+                    df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=90))]
+                    fecha_texto = "Últimos 90 Días"
+                elif filtro_t == "Último Semestre":
+                    df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=180))]
+                    fecha_texto = "Últimos 180 Días"
+                elif filtro_t == "Último Año":
+                    df_f = df_f[df_f['Fecha'] >= (hoy - timedelta(days=365))]
+                    fecha_texto = "Último Año"
                 elif filtro_t == "Mes Específico":
                     mm = st.selectbox("Mes", range(1,13), index=hoy.month-1, format_func=lambda x: obtener_nombre_mes(x))
                     aa = st.number_input("Año", 2023, 2030, hoy.year)
@@ -298,7 +306,6 @@ with t3:
                     fecha_texto = f"{obtener_nombre_mes(mm)} {aa}"
 
             with c_k:
-                # SOLUCIÓN PUNTO 1: CÁLCULO REAL DE REPETICIONES
                 repes = 0; critico = "-"
                 if not df_f.empty:
                     conteos = df_f['Equipo_Full'].value_counts()
@@ -311,14 +318,14 @@ with t3:
 
             st.subheader("Análisis Visual")
             c1,c2,c3=st.columns(3)
-            # SOLUCIÓN PUNTO 3: FONDO BLANCO EN TODOS LOS GRÁFICOS
+            # FONDO BLANCO FORZADO PARA PDF
             l_cfg=dict(margin=dict(l=10,r=10,t=30,b=10), height=300, paper_bgcolor='white', plot_bgcolor='white')
             
             drk=df_f.groupby('Equipo_Full').agg(Fallas=('Fecha','count')).reset_index().sort_values('Fallas',ascending=True)
             frk=px.bar(drk, x='Fallas', y='Equipo_Full', orientation='h', title="Ranking"); frk.update_layout(**l_cfg); c1.plotly_chart(frk, use_container_width=True)
             
             fpi=px.pie(df_f, names='Inversor', title="Inversores"); fpi.update_layout(**l_cfg); c2.plotly_chart(fpi, use_container_width=True)
-            fpo=px.pie(df_f, names='Polaridad', title="Polaridad"); fpo.update_layout(**l_cfg); c3.plotly_chart(fpo, use_container_width=True)
+            fpo=px.pie(df_f, names='Polaridad', title="Polaridad", color_discrete_sequence=['#EF553B','#636EFA']); fpo.update_layout(**l_cfg); c3.plotly_chart(fpo, use_container_width=True)
             
             ia=generar_analisis_auto(df_f); st.info(ia); txt=st.text_area("Conclusiones:")
             if st.download_button("📄 PDF Reporte", crear_pdf_gerencial(planta_sel, fecha_texto, kpis, ia, txt, frk, fpi, fpo), "Reporte.pdf"): pass
