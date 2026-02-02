@@ -15,6 +15,11 @@ from fpdf import FPDF
 # Forzar tema plotly globalmente
 pio.templates.default = "plotly"
 
+# --- CONSTANTES DE NEGOCIO ---
+VOLTAJE_DC = 1500
+PRECIO_MWH = 40
+HORAS_SOL_REP = 10
+
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Monitor Planta Solar", layout="wide", initial_sidebar_state="expanded")
 
@@ -66,16 +71,10 @@ def cargar_datos_mediciones():
         data = sheet.get_all_records()
         if not data: return pd.DataFrame(columns=['Fecha', 'Planta', 'Equipo', 'String ID', 'Amperios'])
         df = pd.DataFrame(data)
-        
-        # --- FIX CRÍTICO: Renombrar String_ID (Google Sheet) a String ID (App) ---
-        if 'String_ID' in df.columns:
-            df.rename(columns={'String_ID': 'String ID'}, inplace=True)
-            
-        # Asegurar columnas requeridas
+        if 'String_ID' in df.columns: df.rename(columns={'String_ID': 'String ID'}, inplace=True)
         req = ['Fecha', 'Planta', 'Equipo', 'String ID', 'Amperios']
         for c in req: 
             if c not in df.columns: df[c] = None
-            
         if 'Fecha' in df.columns: df['Fecha'] = pd.to_datetime(df['Fecha'])
         if 'Amperios' in df.columns: df['Amperios'] = pd.to_numeric(df['Amperios'], errors='coerce').fillna(0)
         return df
@@ -104,8 +103,6 @@ def guardar_medicion_masiva(df_mediciones, planta, equipo, fecha):
     for _, row in df_mediciones.iterrows():
         filas.append([f_str, planta, equipo, row['String ID'], row['Amperios']])
     sheet.append_rows(filas)
-    
-    # --- FIX CRÍTICO: Actualizar caché y recargar sesión inmediatamente ---
     st.cache_data.clear()
     st.session_state.df_med_cache = cargar_datos_mediciones()
     st.toast("✅ Guardado y Sincronizado")
@@ -116,7 +113,7 @@ def crear_id_tecnico(row):
     try: return f"{str(row['Inversor']).replace('Inv-','')}-{str(row['Caja']).replace('CB-','')}-{str(row['String']).replace('Str-','')} {'(+)' if 'Positivo' in str(row['Polaridad']) else '(-)'}"
     except: return "Error"
 
-def generar_analisis_auto(df):
+def generar_analisis_auto(df, perdida_total):
     if df.empty: return "Sin datos."
     total = len(df)
     eq = (df['Inversor'] + " > " + df['Caja']).mode()
@@ -126,7 +123,7 @@ def generar_analisis_auto(df):
     trend = "Equilibrada"
     if pos > neg * 1.5: trend = "Predominancia POSITIVA"
     if neg > pos * 1.5: trend = "Predominancia NEGATIVA"
-    return f"Total Fallas: {total}. Crítico: {crit}. Tendencia: {trend}. Promedio: {df['Amperios'].mean():.1f}A."
+    return f"Resumen Ejecutivo:\n- Total Fallas: {total}.\n- Equipo Crítico: {crit}.\n- Tendencia: {trend}.\n- Pérdida Económica Est: {perdida_total} USD."
 
 def generar_diagnostico_mediciones(df):
     vals = df['Amperios']
@@ -145,44 +142,94 @@ class PDF(FPDF):
         self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
 
 def clean_text(text):
+    """Limpia caracteres incompatibles pero MANTIENE acentos"""
     if not isinstance(text, str): return str(text)
-    replacements = {'•':'-', '—':'-', '–':'-', '“':'"', '”':'"', '‘':"'", '’':"'", 'ñ':'n', 'Ñ':'N', 'á':'a', 'é':'e', 'í':'i', 'ó':'o', 'ú':'u', 'Á':'A', 'É':'E', 'Í':'I', 'Ó':'O', 'Ú':'U', '⚡':''}
-    for k, v in replacements.items(): text = text.replace(k, v)
+    
+    # 1. Reemplazos de caracteres raros o emojis (que rompen el PDF)
+    replacements = {
+        '•': '-', '—': '-', '–': '-', '“': '"', '”': '"', 
+        '‘': "'", '’': "'", '⚡': '' 
+    }
+    for k, v in replacements.items(): 
+        text = text.replace(k, v)
+        
+    # 2. Codificación latin-1 permitiendo errores para caracteres no soportados,
+    # pero manteniendo á, é, í, ó, ú, ñ que SÍ están en latin-1.
     return text.encode('latin-1', 'replace').decode('latin-1')
 
-def crear_pdf_gerencial(planta, periodo_texto, kpis, ia_text, engineer_text, fig_rank, fig_pie, fig_pol):
+def crear_pdf_gerencial(planta, periodo_texto, kpis, ia_text, engineer_text, fig_rank, fig_pie, fig_pol, fig_heat):
     pdf = PDF(); pdf.add_page(); pdf.set_auto_page_break(True, margin=15)
     pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"Reporte Gerencial: {planta} | {periodo_texto}"), 0, 1, 'L')
-    pdf.set_font("Arial", "", 10); pdf.cell(0, 10, clean_text(f"Fecha Emision: {pd.Timestamp.now().strftime('%d-%m-%Y')}"), 0, 1, 'L'); pdf.ln(5)
+    pdf.set_font("Arial", "", 10); pdf.cell(0, 10, clean_text(f"Fecha Emisión: {pd.Timestamp.now().strftime('%d-%m-%Y')}"), 0, 1, 'L'); pdf.ln(5)
+    
+    # KPIs
     pdf.set_fill_color(230, 240, 255); pdf.rect(10, pdf.get_y(), 190, 20, 'F')
-    pdf.set_font("Arial", "B", 10); pdf.cell(47, 10, "Fallas Total", 0, 0, 'C'); pdf.cell(47, 10, "Critico", 0, 0, 'C'); pdf.cell(47, 10, "Promedio", 0, 0, 'C'); pdf.cell(47, 10, "Repeticiones", 0, 1, 'C')
-    pdf.set_font("Arial", "", 12); pdf.cell(47, 10, str(kpis['total']), 0, 0, 'C'); pdf.cell(47, 10, clean_text(str(kpis['critico'])), 0, 0, 'C'); pdf.cell(47, 10, str(kpis['promedio']), 0, 0, 'C'); pdf.cell(47, 10, str(kpis['repes']), 0, 1, 'C'); pdf.ln(10)
-    pdf.set_font("Arial", "B", 11); pdf.cell(0, 8, clean_text("Diagnostico Automatico"), 0, 1)
+    pdf.set_font("Arial", "B", 10)
+    pdf.cell(47, 10, "Fallas Total", 0, 0, 'C'); pdf.cell(47, 10, "Critico", 0, 0, 'C')
+    pdf.cell(47, 10, clean_text("Pérdida (USD)"), 0, 0, 'C'); pdf.cell(47, 10, "Repeticiones", 0, 1, 'C')
+    pdf.set_font("Arial", "", 12)
+    pdf.cell(47, 10, str(kpis['total']), 0, 0, 'C'); pdf.cell(47, 10, clean_text(str(kpis['critico'])), 0, 0, 'C')
+    pdf.cell(47, 10, str(kpis['perdida']), 0, 0, 'C'); pdf.cell(47, 10, str(kpis['repes']), 0, 1, 'C'); pdf.ln(10)
+    
+    pdf.set_font("Arial", "B", 11); pdf.cell(0, 8, clean_text("Diagnóstico Automático"), 0, 1)
     pdf.set_font("Arial", "", 10); pdf.multi_cell(0, 6, clean_text(ia_text)); pdf.ln(5)
+    
     pdf.set_font("Arial", "B", 11); pdf.set_text_color(200, 0, 0); pdf.cell(0, 8, clean_text("Comentarios Gerencia"), 0, 1)
     pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 10); pdf.multi_cell(0, 6, clean_text(engineer_text)); pdf.ln(10)
-    pdf.add_page(); pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, "ANEXO GRAFICO", 0, 1, 'C'); pdf.ln(5)
+    
+    # --- PAGINA 2: MAPA DE CALOR Y RANKING ---
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("ANEXO 1: DETALLE DE FALLAS"), 0, 1, 'C'); pdf.ln(5)
+    
     try:
-        img_cfg = {"format": "png", "width": 900, "height": 550, "scale": 2.5}
+        img_cfg = {"format": "png", "width": 850, "height": 450, "scale": 2}
+        
+        # Heatmap
+        if fig_heat:
+            fig_heat.update_layout(template="plotly", paper_bgcolor="white", plot_bgcolor="white")
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t0: 
+                fig_heat.write_image(t0.name, **img_cfg)
+                pdf.image(t0.name, x=10, w=190)
+                pdf.ln(5)
+
+        # Ranking
         if fig_rank:
             fig_rank.update_layout(template="plotly", paper_bgcolor="white", plot_bgcolor="white")
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t1: fig_rank.write_image(t1.name, **img_cfg); pdf.image(t1.name, x=10, w=190); pdf.ln(5)
-        y_pos = pdf.get_y(); pie_cfg = {"format": "png", "width": 550, "height": 450, "scale": 2.5}
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t1: 
+                fig_rank.write_image(t1.name, **img_cfg)
+                pdf.image(t1.name, x=10, w=190)
+    except Exception as e: st.warning(f"Error graficos p2: {e}")
+
+    # --- PAGINA 3: TORTAS DE DISTRIBUCIÓN ---
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("ANEXO 2: DISTRIBUCIÓN"), 0, 1, 'C'); pdf.ln(5)
+    
+    try:
+        pie_cfg = {"format": "png", "width": 500, "height": 400, "scale": 2}
+        y_pos = pdf.get_y()
+        
         if fig_pie:
             fig_pie.update_layout(template="plotly", paper_bgcolor="white", plot_bgcolor="white")
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t2: fig_pie.write_image(t2.name, **pie_cfg); pdf.image(t2.name, x=10, y=y_pos, w=90)
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t2: 
+                fig_pie.write_image(t2.name, **pie_cfg)
+                pdf.image(t2.name, x=10, y=y_pos, w=90)
+        
         if fig_pol:
             fig_pol.update_layout(template="plotly", paper_bgcolor="white", plot_bgcolor="white")
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t3: fig_pol.write_image(t3.name, **pie_cfg); pdf.image(t3.name, x=110, y=y_pos, w=90)
-    except Exception as e: st.warning(f"Problema al generar gráficos en PDF: {e}")
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t3: 
+                fig_pol.write_image(t3.name, **pie_cfg)
+                pdf.image(t3.name, x=110, y=y_pos, w=90)
+                
+    except Exception as e: st.warning(f"Error graficos p3: {e}")
+
     return bytes(pdf.output(dest='S'))
 
 def crear_pdf_mediciones(planta, equipo, fecha, df_data, kpis, comentarios, fig_box, evidencias):
     pdf = PDF(); pdf.add_page(); pdf.set_auto_page_break(True, margin=15)
-    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"REPORTE MEDICION CAMPO"), 0, 1, 'C'); pdf.ln(5)
-    pdf.set_font("Arial", "", 10); pdf.cell(0, 8, clean_text(f"Planta: {planta}"), 0, 1); pdf.cell(0, 8, clean_text(f"Equipo: {equipo}"), 0, 1); pdf.cell(0, 8, clean_text(f"Fecha: {fecha}"), 0, 1); pdf.ln(5)
+    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"REPORTE MEDICIÓN CAMPO"), 0, 1, 'C'); pdf.ln(5)
+    pdf.set_font("Arial", "", 10); pdf.cell(0, 8, clean_text(f"Planta: {planta} | Equipo: {equipo}"), 0, 1); pdf.cell(0, 8, clean_text(f"Fecha: {fecha}"), 0, 1); pdf.ln(5)
     pdf.set_fill_color(240, 240, 240); pdf.rect(10, pdf.get_y(), 190, 20, 'F')
-    pdf.set_font("Arial", "B", 11); pdf.cell(63, 10, "Promedio", 0, 0, 'C'); pdf.cell(63, 10, "Dispersion", 0, 0, 'C'); pdf.cell(63, 10, "Estado", 0, 1, 'C')
+    pdf.set_font("Arial", "B", 11); pdf.cell(63, 10, "Promedio", 0, 0, 'C'); pdf.cell(63, 10, clean_text("Dispersión"), 0, 0, 'C'); pdf.cell(63, 10, "Estado", 0, 1, 'C')
     pdf.set_font("Arial", "", 12); pdf.cell(63, 10, f"{kpis['promedio']}", 0, 0, 'C'); pdf.cell(63, 10, f"{kpis['dispersion']}", 0, 0, 'C'); pdf.cell(63, 10, clean_text(kpis['estado']), 0, 1, 'C'); pdf.ln(10)
     pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("Informe a Gerencia"), 0, 1)
     pdf.set_font("Arial", "", 10); pdf.multi_cell(0, 6, clean_text(comentarios) if comentarios else "-"); pdf.ln(10)
@@ -346,14 +393,27 @@ with t3:
                     df_f = df_f[(df_f['Fecha'].dt.month == mm) & (df_f['Fecha'].dt.year == aa)]
                     fecha_texto = f"{obtener_nombre_mes(mm)} {aa}"
             with c_k:
+                # --- CALCULO ECONOMICO ---
                 repes = 0; critico = "-"
+                # Formula: (Amperios * 1500V / 1000000) * 40 USD/MWh * 10 Horas
+                # Factor = 1500 * 40 * 10 / 1000000 = 0.6 USD
+                df_f['Perdida'] = df_f['Amperios'] * 0.6
+                perdida_total = f"{df_f['Perdida'].sum():.1f} USD"
+
                 if not df_f.empty:
                     conteos = df_f['Equipo_Full'].value_counts()
                     critico = conteos.idxmax(); repes = conteos.max()
-                kpis = {'total': len(df_f), 'promedio': f"{df_f['Amperios'].mean():.1f} A", 'critico': critico, 'repes': repes}
+                kpis = {'total': len(df_f), 'promedio': f"{df_f['Amperios'].mean():.1f} A", 'critico': critico, 'repes': repes, 'perdida': perdida_total}
                 k1, k2, k3, k4 = st.columns([1, 1, 1.5, 1])
-                k1.metric("Fallas", kpis['total']); k2.metric("Promedio", kpis['promedio']); k3.metric("Equipo Crítico", kpis['critico']); k4.metric("Repeticiones", kpis['repes'])
+                k1.metric("Fallas", kpis['total']); k2.metric("Promedio", kpis['promedio']); k3.metric("Equipo Crítico", kpis['critico']); k4.metric("Pérdida Est.", kpis['perdida'])
+            
             st.subheader("Análisis Visual")
+            # --- MAPA DE CALOR ---
+            df_heat = df_f.groupby(['Inversor', 'Caja']).size().reset_index(name='Fallas')
+            fig_heat = px.density_heatmap(df_heat, x='Inversor', y='Caja', z='Fallas', title="Mapa de Calor (Concentración)", color_continuous_scale='Reds')
+            fig_heat.update_layout(template="plotly", paper_bgcolor='white', plot_bgcolor='white', height=400)
+            st.plotly_chart(fig_heat, use_container_width=True)
+
             c1, c2, c3 = st.columns(3)
             l_cfg = dict(margin=dict(l=10, r=10, t=50, b=10), height=350, paper_bgcolor='white', plot_bgcolor='white')
             drk = df_f.groupby('Equipo_Full').agg(Fallas=('Fecha', 'count')).reset_index().sort_values('Fallas', ascending=True)
@@ -363,10 +423,11 @@ with t3:
             fpo.update_traces(textinfo='percent+label', textposition='inside')
             fpo.update_layout(showlegend=True, height=380, paper_bgcolor='white', plot_bgcolor='white')
             c3.plotly_chart(fpo, use_container_width=True)
-            ia = generar_analisis_auto(df_f); st.info(ia); txt = st.text_area("Conclusiones:")
+            
+            ia = generar_analisis_auto(df_f, perdida_total); st.info(ia); txt = st.text_area("Conclusiones:")
             c_pdf, c_xls = st.columns(2)
             with c_pdf:
-                st.download_button("📄 PDF Reporte", crear_pdf_gerencial(planta_sel, fecha_texto, kpis, ia, txt, frk, fpi, fpo), "Reporte.pdf")
+                st.download_button("📄 PDF Reporte", crear_pdf_gerencial(planta_sel, fecha_texto, kpis, ia, txt, frk, fpi, fpo, fig_heat), "Reporte_Fallas.pdf", type="primary")
             with c_xls:
                 excel_data = generar_excel_pro(df_f, planta_sel, fecha_texto, txt)
                 if excel_data: st.download_button("📥 Excel Datos", excel_data, f"Datos_Fallas_{planta_sel}.xlsx")
