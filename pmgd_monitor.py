@@ -108,6 +108,25 @@ def guardar_medicion_masiva(df_mediciones, planta, equipo, fecha):
     st.toast("✅ Guardado y Sincronizado")
     st.rerun()
 
+# --- LOGICA DIAGNOSTICO (NUEVO V37) ---
+def clasificar_falla(amp):
+    if amp < 4.0: return "Fatiga (<4A)"
+    elif amp > 8.0: return "Sobrecarga (>8A)"
+    else: return "Operativa (4-8A)"
+
+def obtener_topologia(df_med, planta):
+    """Calcula cuántos strings tiene cada caja basado en mediciones históricas"""
+    if df_med.empty: return pd.DataFrame(columns=['Equipo', 'Strings Detectados', 'Origen'])
+    
+    df_p = df_med[df_med['Planta'] == planta]
+    if df_p.empty: return pd.DataFrame(columns=['Equipo', 'Strings Detectados', 'Origen'])
+    
+    # Agrupar por equipo y contar strings únicos
+    topo = df_p.groupby('Equipo')['String ID'].nunique().reset_index()
+    topo.columns = ['Equipo', 'Strings Detectados']
+    topo['Origen'] = 'Medición Real'
+    return topo
+
 # --- HELPERS ---
 def crear_id_tecnico(row):
     try: return f"{str(row['Inversor']).replace('Inv-','')}-{str(row['Caja']).replace('CB-','')}-{str(row['String']).replace('Str-','')} {'(+)' if 'Positivo' in str(row['Polaridad']) else '(-)'}"
@@ -142,19 +161,9 @@ class PDF(FPDF):
         self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
 
 def clean_text(text):
-    """Limpia caracteres incompatibles pero MANTIENE acentos"""
     if not isinstance(text, str): return str(text)
-    
-    # 1. Reemplazos de caracteres raros o emojis (que rompen el PDF)
-    replacements = {
-        '•': '-', '—': '-', '–': '-', '“': '"', '”': '"', 
-        '‘': "'", '’': "'", '⚡': '' 
-    }
-    for k, v in replacements.items(): 
-        text = text.replace(k, v)
-        
-    # 2. Codificación latin-1 permitiendo errores para caracteres no soportados,
-    # pero manteniendo á, é, í, ó, ú, ñ que SÍ están en latin-1.
+    replacements = {'•':'-', '—':'-', '–':'-', '“':'"', '”':'"', '‘':"'", '’':"'", 'ñ':'n', 'Ñ':'N', 'á':'a', 'é':'e', 'í':'i', 'ó':'o', 'ú':'u', 'Á':'A', 'É':'E', 'Í':'I', 'Ó':'O', 'Ú':'U', '⚡':''}
+    for k, v in replacements.items(): text = text.replace(k, v)
     return text.encode('latin-1', 'replace').decode('latin-1')
 
 def crear_pdf_gerencial(planta, periodo_texto, kpis, ia_text, engineer_text, fig_rank, fig_pie, fig_pol, fig_heat):
@@ -162,7 +171,6 @@ def crear_pdf_gerencial(planta, periodo_texto, kpis, ia_text, engineer_text, fig
     pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"Reporte Gerencial: {planta} | {periodo_texto}"), 0, 1, 'L')
     pdf.set_font("Arial", "", 10); pdf.cell(0, 10, clean_text(f"Fecha Emisión: {pd.Timestamp.now().strftime('%d-%m-%Y')}"), 0, 1, 'L'); pdf.ln(5)
     
-    # KPIs
     pdf.set_fill_color(230, 240, 255); pdf.rect(10, pdf.get_y(), 190, 20, 'F')
     pdf.set_font("Arial", "B", 10)
     pdf.cell(47, 10, "Fallas Total", 0, 0, 'C'); pdf.cell(47, 10, "Critico", 0, 0, 'C')
@@ -177,51 +185,31 @@ def crear_pdf_gerencial(planta, periodo_texto, kpis, ia_text, engineer_text, fig
     pdf.set_font("Arial", "B", 11); pdf.set_text_color(200, 0, 0); pdf.cell(0, 8, clean_text("Comentarios Gerencia"), 0, 1)
     pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", "", 10); pdf.multi_cell(0, 6, clean_text(engineer_text)); pdf.ln(10)
     
-    # --- PAGINA 2: MAPA DE CALOR Y RANKING ---
-    pdf.add_page()
-    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("ANEXO 1: DETALLE DE FALLAS"), 0, 1, 'C'); pdf.ln(5)
-    
+    pdf.add_page(); pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("ANEXO 1: DETALLE DE FALLAS"), 0, 1, 'C'); pdf.ln(5)
     try:
         img_cfg = {"format": "png", "width": 850, "height": 450, "scale": 2}
-        
-        # Heatmap
         if fig_heat:
             fig_heat.update_layout(template="plotly", paper_bgcolor="white", plot_bgcolor="white")
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t0: 
-                fig_heat.write_image(t0.name, **img_cfg)
-                pdf.image(t0.name, x=10, w=190)
-                pdf.ln(5)
-
-        # Ranking
+                fig_heat.write_image(t0.name, **img_cfg); pdf.image(t0.name, x=10, w=190); pdf.ln(5)
         if fig_rank:
             fig_rank.update_layout(template="plotly", paper_bgcolor="white", plot_bgcolor="white")
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t1: 
-                fig_rank.write_image(t1.name, **img_cfg)
-                pdf.image(t1.name, x=10, w=190)
+                fig_rank.write_image(t1.name, **img_cfg); pdf.image(t1.name, x=10, w=190)
     except Exception as e: st.warning(f"Error graficos p2: {e}")
 
-    # --- PAGINA 3: TORTAS DE DISTRIBUCIÓN ---
-    pdf.add_page()
-    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("ANEXO 2: DISTRIBUCIÓN"), 0, 1, 'C'); pdf.ln(5)
-    
+    pdf.add_page(); pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("ANEXO 2: DISTRIBUCIÓN"), 0, 1, 'C'); pdf.ln(5)
     try:
-        pie_cfg = {"format": "png", "width": 500, "height": 400, "scale": 2}
-        y_pos = pdf.get_y()
-        
+        pie_cfg = {"format": "png", "width": 500, "height": 400, "scale": 2}; y_pos = pdf.get_y()
         if fig_pie:
             fig_pie.update_layout(template="plotly", paper_bgcolor="white", plot_bgcolor="white")
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t2: 
-                fig_pie.write_image(t2.name, **pie_cfg)
-                pdf.image(t2.name, x=10, y=y_pos, w=90)
-        
+                fig_pie.write_image(t2.name, **pie_cfg); pdf.image(t2.name, x=10, y=y_pos, w=90)
         if fig_pol:
             fig_pol.update_layout(template="plotly", paper_bgcolor="white", plot_bgcolor="white")
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t3: 
-                fig_pol.write_image(t3.name, **pie_cfg)
-                pdf.image(t3.name, x=110, y=y_pos, w=90)
-                
+                fig_pol.write_image(t3.name, **pie_cfg); pdf.image(t3.name, x=110, y=y_pos, w=90)
     except Exception as e: st.warning(f"Error graficos p3: {e}")
-
     return bytes(pdf.output(dest='S'))
 
 def crear_pdf_mediciones(planta, equipo, fecha, df_data, kpis, comentarios, fig_box, evidencias):
@@ -301,7 +289,8 @@ with st.sidebar:
         nuevo = st.text_input("Agregar planta")
         if st.button("Agregar") and nuevo: plantas.append(nuevo); json.dump(plantas, open("plantas_config.json", 'w')); st.rerun()
 
-t1, t2, t3 = st.tabs(["📝 Fallas", "⚡ Mediciones", "📊 Informes"])
+# --- TABS V37 ---
+t1, t2, t3, t4 = st.tabs(["📝 Fallas", "⚡ Mediciones", "📊 Informes", "🔍 Diagnóstico"])
 
 with t1:
     st.subheader(f"Registro: {planta_sel}")
@@ -393,11 +382,9 @@ with t3:
                     df_f = df_f[(df_f['Fecha'].dt.month == mm) & (df_f['Fecha'].dt.year == aa)]
                     fecha_texto = f"{obtener_nombre_mes(mm)} {aa}"
             with c_k:
-                # --- CALCULO ECONOMICO ---
                 repes = 0; critico = "-"
-                # Formula: (Amperios * 1500V / 1000000) * 40 USD/MWh * 10 Horas
-                # Factor = 1500 * 40 * 10 / 1000000 = 0.6 USD
-                df_f['Perdida'] = df_f['Amperios'] * 0.6
+                # Calculo Economico
+                df_f['Perdida'] = df_f['Amperios'] * (VOLTAJE_DC * PRECIO_MWH * HORAS_SOL_REP / 1000000)
                 perdida_total = f"{df_f['Perdida'].sum():.1f} USD"
 
                 if not df_f.empty:
@@ -405,10 +392,10 @@ with t3:
                     critico = conteos.idxmax(); repes = conteos.max()
                 kpis = {'total': len(df_f), 'promedio': f"{df_f['Amperios'].mean():.1f} A", 'critico': critico, 'repes': repes, 'perdida': perdida_total}
                 k1, k2, k3, k4 = st.columns([1, 1, 1.5, 1])
-                k1.metric("Fallas", kpis['total']); k2.metric("Promedio", kpis['promedio']); k3.metric("Equipo Crítico", kpis['critico']); k4.metric("Pérdida Est.", kpis['perdida'])
+                k1.metric("Fallas", kpis['total']); k2.metric("Promedio", kpis['promedio']); k3.metric("Equipo Crítico", kpis['critico']); k4.metric("Perdida Est.", kpis['perdida'])
             
             st.subheader("Análisis Visual")
-            # --- MAPA DE CALOR ---
+            # HEATMAP
             df_heat = df_f.groupby(['Inversor', 'Caja']).size().reset_index(name='Fallas')
             fig_heat = px.density_heatmap(df_heat, x='Inversor', y='Caja', z='Fallas', title="Mapa de Calor (Concentración)", color_continuous_scale='Reds')
             fig_heat.update_layout(template="plotly", paper_bgcolor='white', plot_bgcolor='white', height=400)
@@ -438,3 +425,52 @@ with t3:
             st.dataframe(dfmp)
             st.download_button("📥 Excel", generar_excel_maestro(dfmp), "Protocolo.xlsx")
         else: st.warning("Sin mediciones.")
+
+# --- T4: DIAGNOSTICO (NUEVO) ---
+with t4:
+    st.header("🔍 Diagnóstico Técnico Avanzado")
+    st.caption("Análisis de causas raíz y topología detectada")
+    
+    df = st.session_state.df_cache; df_d = df[df['Planta'] == planta_sel].copy()
+    
+    if not df_d.empty:
+        c_gh, c_typ = st.columns(2)
+        
+        # 1. Strings Fantasma
+        with c_gh:
+            st.subheader("👻 Strings Fantasma (Reincidentes)")
+            df_d['ID_Unico'] = df_d['Inversor'] + " > " + df_d['Caja'] + " > " + df_d['String']
+            counts = df_d['ID_Unico'].value_counts()
+            ghosts = counts[counts > 1]
+            if not ghosts.empty:
+                st.error(f"Se detectaron {len(ghosts)} strings con fallas múltiples.")
+                st.dataframe(ghosts.rename("Fallas"), use_container_width=True)
+            else:
+                st.success("No hay strings reincidentes.")
+
+        # 2. Tipo de Falla
+        with c_typ:
+            st.subheader("⚡ Clasificación de Causa")
+            df_d['Tipo_Falla'] = df_d['Amperios'].apply(clasificar_falla)
+            fig_pie_type = px.pie(df_d, names='Tipo_Falla', title="Fatiga vs Sobrecarga", 
+                                  color='Tipo_Falla',
+                                  color_discrete_map={
+                                      "Fatiga (<4A)": "#2ecc71", 
+                                      "Sobrecarga (>8A)": "#e74c3c", 
+                                      "Operativa (4-8A)": "#f1c40f"
+                                  }, hole=0.6)
+            st.plotly_chart(fig_pie_type, use_container_width=True)
+    else:
+        st.info("Sin datos de fallas para diagnosticar.")
+
+    st.divider()
+    
+    # 3. Topología Detectada
+    st.subheader("🗺️ Monitor de Topología (Auto-Descubrimiento)")
+    df_meds = st.session_state.df_med_cache
+    topo_data = obtener_topologia(df_meds, planta_sel)
+    
+    if not topo_data.empty:
+        st.dataframe(topo_data, use_container_width=True)
+    else:
+        st.warning("No hay mediciones registradas para construir la topología. Se asume estándar de 12 strings.")
