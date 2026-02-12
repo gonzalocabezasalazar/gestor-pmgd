@@ -129,7 +129,7 @@ def analizar_string_local(row):
     ref_caja = row['Promedio_Caja']
     
     if val == 0: return "CORTE (0A)"
-    if ref_caja == 0: return "NORMAL" # Si toda la caja está en 0, es normal (noche)
+    if ref_caja == 0: return "NORMAL" 
     
     tolerancia = 0.20
     
@@ -141,14 +141,12 @@ def generar_diagnostico_mediciones_pro_local(df):
     if df.empty: return "NORMAL", "success", df
     
     # 1. Calcular promedio POR CAJA (Local)
-    # Esto agrega una columna con el promedio de LOS COMPAÑEROS de esa caja
     df['Promedio_Caja'] = df.groupby('Equipo')['Amperios'].transform('mean')
     
-    # 2. Aplicar diagnostico fila por fila comparando con SU caja
+    # 2. Aplicar diagnostico fila por fila
     df['Diagnostico'] = df.apply(analizar_string_local, axis=1)
     
-    # 3. Calcular desviación porcentual para mostrar en tabla
-    # (val - prom) / prom * 100
+    # 3. Calcular desviación
     df['Desviacion_Pct'] = np.where(df['Promedio_Caja'] > 0, 
                                     ((df['Amperios'] - df['Promedio_Caja']) / df['Promedio_Caja']) * 100, 
                                     0)
@@ -352,22 +350,21 @@ with t2:
     vals = df_ed['Amperios']
     v_cl = vals[vals > 0]
     
-    # NOTA: En la pestaña de carga manual, el diagnostico sigue siendo simple (global)
-    # porque aun no tenemos el contexto de las otras cajas. El diagnostico avanzado está en INFORMES.
     if not v_cl.empty:
+        # LOGICA CORREGIDA PARA V40.1 - Carga Manual usa Diagnostico Simple
         prom = v_cl.mean(); dev = v_cl.std(); cv = (dev / prom) * 100 if prom > 0 else 0
         cs.metric("Promedio Local", f"{prom:.2f} A")
         
-        # Logica simple para feedback inmediato al tecnico
         def diag_simple(v, p):
-            if v == 0: return "CRÍTICO"
-            if v < p * 0.8: return "BAJO"
-            return "OK"
+            if v == 0: return "CORTE (0A)"
+            if v < p * 0.8: return "BAJA CORRIENTE"
+            return "NORMAL"
             
-        df_ed['Estado'] = df_ed['Amperios'].apply(lambda x: diag_simple(x, prom))
+        # IMPORTANTE: Ahora usamos 'Diagnostico' para que el PDF lo encuentre
+        df_ed['Diagnostico'] = df_ed['Amperios'].apply(lambda x: diag_simple(x, prom))
         
-        fig = px.bar(df_ed, x='String ID', y='Amperios', color='Estado', 
-                     color_discrete_map={'OK': '#2ecc71', 'CRÍTICO': '#e74c3c', 'BAJO': '#f39c12'})
+        fig = px.bar(df_ed, x='String ID', y='Amperios', color='Diagnostico', 
+                     color_discrete_map={'NORMAL': '#2ecc71', 'CORTE (0A)': '#e74c3c', 'BAJA CORRIENTE': '#f39c12'})
         fig.update_layout(template="plotly", paper_bgcolor='white', plot_bgcolor='white', margin=dict(l=10, r=10, t=40, b=40), height=400)
         fig.add_hline(y=prom, line_dash="dash", line_color="gray")
         cs.plotly_chart(fig, use_container_width=True)
@@ -376,6 +373,8 @@ with t2:
         cb1, cb2 = st.columns(2)
         if cb1.button("💾 Guardar"): guardar_medicion_masiva(df_ed, planta_sel, f"Inv-{mi}>CB-{mc}", mf)
         kpis = {'promedio': f"{prom:.1f}", 'dispersion': f"{cv:.1f}%", 'estado': "Carga Manual"}
+        
+        # Ahora el PDF funcionará porque df_ed tiene la columna 'Diagnostico'
         cb2.download_button("📄 PDF Caja", crear_pdf_mediciones(planta_sel, f"Inv-{mi}>CB-{mc}", mf.strftime("%d-%m-%Y"), df_ed, kpis, comm, fig, imgs), f"Med_{mc}.pdf")
 
 with t3:
@@ -427,7 +426,6 @@ with t3:
         dfm = st.session_state.df_med_cache; dfmp = dfm[dfm['Planta'] == planta_sel].copy()
         
         if not dfmp.empty:
-            # AQUI SE APLICA LA MAGIA DE V40: CALCULO PROMEDIO POR GRUPO (CAJA)
             stt_glob, col_glob, df_processed = generar_diagnostico_mediciones_pro_local(dfmp)
             
             st.markdown("### 🚦 Resumen Ejecutivo de Mediciones (Inteligencia Local)")
@@ -455,13 +453,11 @@ with t3:
                 st.plotly_chart(fig_don, use_container_width=True)
                 
             with g2:
-                # Top 15 Ovejas Negras (Filtrado seguro)
                 filtro_problemas = (df_processed['Diagnostico'] == "BAJA CORRIENTE") | (df_processed['Diagnostico'] == "CORTE (0A)")
                 df_bajos = df_processed[filtro_problemas].sort_values('Amperios', ascending=True).head(15)
                 
                 if not df_bajos.empty:
                     df_bajos['ID_Full'] = df_bajos['Equipo'] + " : " + df_bajos['String ID']
-                    # Mostramos el valor real VS el promedio de la caja en el hover
                     fig_bar = px.bar(df_bajos, x='Amperios', y='ID_Full', orientation='h', 
                                      title="Top 15: Strings con Peor Desempeño",
                                      color='Diagnostico',
@@ -472,10 +468,8 @@ with t3:
                 else:
                     st.success("🎉 ¡Excelente! No hay strings con bajo desempeño.")
             
-            # --- NUEVA TABLA DETALLADA V40 ---
             st.subheader("🔎 Detalle de Anomalías (Comparación Local)")
             if not df_bajos.empty:
-                # Tabla limpia para el ingeniero
                 tabla_detalle = df_bajos[['Fecha', 'Equipo', 'String ID', 'Amperios', 'Promedio_Caja', 'Desviacion_Pct', 'Diagnostico']].copy()
                 tabla_detalle['Promedio_Caja'] = tabla_detalle['Promedio_Caja'].round(2)
                 tabla_detalle['Desviacion_Pct'] = tabla_detalle['Desviacion_Pct'].round(1).astype(str) + '%'
