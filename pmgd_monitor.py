@@ -429,7 +429,7 @@ with t3:
             stt_glob, col_glob, df_processed = generar_diagnostico_mediciones_pro_local(dfmp)
             
             st.markdown("### 🚦 Resumen Ejecutivo de Mediciones (Inteligencia Local)")
-            st.caption("Analizando cada string contra el promedio de SU propia caja (no el global).")
+            st.caption("Analizando cada string contra el promedio de caja .")
             
             tot_strings = len(df_processed)
             tot_criticos = len(df_processed[df_processed['Diagnostico'] == "CORTE (0A)"])
@@ -507,3 +507,4 @@ with t4:
     df_meds = st.session_state.df_med_cache; topo_data = obtener_topologia(df_meds, planta_sel)
     if not topo_data.empty: st.dataframe(topo_data, use_container_width=True)
     else: st.warning("No hay mediciones registradas.")
+
