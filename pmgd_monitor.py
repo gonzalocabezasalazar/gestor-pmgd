@@ -20,7 +20,7 @@ pio.templates.default = "plotly"
 VOLTAJE_DC = 1500
 PRECIO_MWH = 40
 HORAS_SOL_REP = 10
-TOLERANCIA_CRITICA = 0.10  # Ajustado al 10% según requerimiento
+TOLERANCIA_CRITICA = 0.10  # 10%
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Monitor Planta Solar", layout="wide", initial_sidebar_state="expanded")
@@ -125,7 +125,7 @@ def obtener_topologia(df_med, planta):
     topo['Origen'] = 'Medición Real'
     return topo
 
-# --- LOGICA ANALISIS MEDICIONES (V41 - 10% TOLERANCIA) ---
+# --- LOGICA ANALISIS MEDICIONES ---
 def analizar_string_local(row):
     val = row['Amperios']
     ref_caja = row['Promedio_Caja']
@@ -133,7 +133,6 @@ def analizar_string_local(row):
     if val == 0: return "CORTE (0A)"
     if ref_caja == 0: return "NORMAL" 
     
-    # Tolerancia ajustada al 10%
     tolerancia = TOLERANCIA_CRITICA 
     
     if val < (ref_caja * (1 - tolerancia)): return "BAJA CORRIENTE"
@@ -147,16 +146,39 @@ def generar_diagnostico_mediciones_pro_local(df):
     df['Desviacion_Pct'] = np.where(df['Promedio_Caja'] > 0, 
                                     ((df['Amperios'] - df['Promedio_Caja']) / df['Promedio_Caja']) * 100, 
                                     0)
-    
-    bajos = len(df[df['Diagnostico'] == "BAJA CORRIENTE"])
-    altos = len(df[df['Diagnostico'] == "SOBRECORRIENTE"])
+    return "OK", "success", df
+
+# --- NUEVO: MOTOR DE NARRATIVA INTELIGENTE ---
+def generar_narrativa_ia(df, planta):
+    # Calcular estadisticas
+    total_str = len(df)
+    prom_global = df['Amperios'].mean()
     cortes = len(df[df['Diagnostico'] == "CORTE (0A)"])
+    bajos = len(df[df['Diagnostico'] == "BAJA CORRIENTE"])
     
-    estado_global = "NORMAL"; msg_color = "success"
-    if cortes > 0: estado_global = "FALLA CRÍTICA"; msg_color = "error"
-    elif bajos > 0 or altos > 0: estado_global = "ADVERTENCIA"; msg_color = "warning"
+    # Encontrar mejor y peor caja
+    df_cajas = df.groupby('Equipo')['Amperios'].mean().reset_index()
+    mejor_caja = df_cajas.loc[df_cajas['Amperios'].idxmax()]
+    peor_caja = df_cajas.loc[df_cajas['Amperios'].idxmin()]
     
-    return estado_global, msg_color, df
+    # Construir el texto
+    texto = (
+        f"Durante la inspeccion tecnica realizada en la planta {planta}, se evaluaron {total_str} strings. "
+        f"El rendimiento promedio global fue de {prom_global:.1f} Amperios. "
+    )
+    
+    if cortes == 0 and bajos == 0:
+        texto += "La planta opera en condiciones optimas, sin deteccion de anomalias criticas. "
+    else:
+        texto += f"Se detectaron oportunidades de mejora: {cortes} strings sin generacion (Cortes) y {bajos} strings con bajo rendimiento operativo. "
+    
+    texto += (
+        f"Analizando la consistencia por equipos, la caja {mejor_caja['Equipo']} presento el mejor desempeño "
+        f"({mejor_caja['Amperios']:.1f}A), mientras que la unidad {peor_caja['Equipo']} registro el promedio mas bajo "
+        f"({peor_caja['Amperios']:.1f}A), sugiriendo una posible necesidad de limpieza o revision focalizada en ese sector."
+    )
+    
+    return texto
 
 # --- HELPERS ---
 def crear_id_tecnico(row):
@@ -164,23 +186,24 @@ def crear_id_tecnico(row):
     except: return "Error"
 
 def generar_analisis_auto(df, perdida_total):
-    if df.empty: return "Sin datos."
-    total = len(df)
-    eq = (df['Inversor'] + " > " + df['Caja']).mode()
-    crit = eq[0] if not eq.empty else "N/A"
-    pos = len(df[df['Polaridad'].astype(str).str.contains("Positivo")])
-    neg = len(df[df['Polaridad'].astype(str).str.contains("Negativo")])
-    trend = "Equilibrada"
-    if pos > neg * 1.5: trend = "Predominancia POSITIVA"
-    if neg > pos * 1.5: trend = "Predominancia NEGATIVA"
-    return f"Resumen Ejecutivo:\n- Total Fallas: {total}.\n- Equipo Crítico: {crit}.\n- Tendencia: {trend}.\n- Pérdida Económica Est: {perdida_total} USD."
+    return f"Resumen Ejecutivo:\n- Pérdida Económica Est: {perdida_total} USD."
 
-# --- PDF MASTER (V41) ---
+# --- PDF MASTER (V43 - BRANDING MUNDO SOLAR) ---
 class PDF(FPDF):
     def header(self):
-        self.set_font('Arial', 'B', 14); self.cell(0, 10, 'INFORME TECNICO PMGD - AUDITORIA DC', 0, 1, 'C'); self.ln(5)
+        # 1. Branding Corporativo (Derecha, pequeño)
+        self.set_font('Arial', 'B', 8)
+        self.set_text_color(100, 100, 100) # Gris
+        self.cell(0, 5, 'Elaborado por Equipo Tecnico MUNDO SOLAR SpA', 0, 1, 'R')
+        
+        # 2. Titulo Principal (Centro, Grande)
+        self.set_font('Arial', 'B', 14)
+        self.set_text_color(0, 0, 0) # Negro
+        self.cell(0, 10, 'INFORME TECNICO PMGD - AUDITORIA DC', 0, 1, 'C')
+        self.ln(5)
+
     def footer(self):
-        self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Pagina {self.page_no()}', 0, 0, 'C')
+        self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Pagina {self.page_no()} - Mundo Solar SpA', 0, 0, 'C')
 
 def clean_text(text):
     if not isinstance(text, str): return str(text)
@@ -195,16 +218,16 @@ def generar_reporte_completo_pdf(planta, df_mediciones):
     stt_glob, col_glob, df_proc = generar_diagnostico_mediciones_pro_local(df_mediciones)
     df_proc['Equipo'] = df_proc['Equipo'].astype(str)
     
-    # Preparar KPIs
-    tot_str = len(df_proc)
-    tot_crit = len(df_proc[df_proc['Diagnostico'] == "CORTE (0A)"])
-    tot_bajos = len(df_proc[df_proc['Diagnostico'] == "BAJA CORRIENTE"])
+    # Generar Narrativa Automatica (IA)
+    narrativa = generar_narrativa_ia(df_proc, planta)
     
     # === PAGINA 1: RESUMEN Y BOXPLOT ===
     pdf.add_page()
-    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"1. Resumen Ejecutivo: {planta}"), 0, 1, 'L')
+    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"1. Analisis Ejecutivo de Performance"), 0, 1, 'L')
+    
+    # Insertar Narrativa Automatica
     pdf.set_font("Arial", "", 10)
-    pdf.multi_cell(0, 6, clean_text(f"Se presenta el análisis de performance DC. La evaluación se basa en la medición de {tot_str} strings. Se detectaron {tot_crit} cortes y {tot_bajos} strings con desviación >10%."))
+    pdf.multi_cell(0, 6, clean_text(narrativa))
     pdf.ln(5)
     
     # Boxplot (Distribución por Caja)
@@ -215,14 +238,15 @@ def generar_reporte_completo_pdf(planta, df_mediciones):
         fig_box.write_image(t1.name, scale=2)
         pdf.image(t1.name, x=10, w=190)
     pdf.ln(5)
-    pdf.multi_cell(0, 6, clean_text("El gráfico superior muestra la dispersión. Cajas más amplias indican mayor inconsistencia interna."))
+    pdf.set_font("Arial", "I", 9)
+    pdf.multi_cell(0, 6, clean_text("Nota: El grafico superior muestra la variabilidad interna. Cajas con rangos amplios indican inconsistencia (posibles sombras parciales)."))
 
     # === PAGINA 2: RANKING PROMEDIOS ===
     pdf.add_page()
-    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("2. Comportamiento por C-Box (Promedios)"), 0, 1, 'L')
+    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("2. Ranking de Rendimiento por Caja"), 0, 1, 'L')
     
     df_mean = df_proc.groupby('Equipo')['Amperios'].mean().reset_index().sort_values('Amperios', ascending=False)
-    fig_bar = px.bar(df_mean, x='Equipo', y='Amperios', title="Promedio de Corriente por Combiner Box", color='Amperios', color_continuous_scale='Viridis')
+    fig_bar = px.bar(df_mean, x='Equipo', y='Amperios', title="Promedio de Corriente (Mayor a Menor)", color='Amperios', color_continuous_scale='Viridis')
     fig_bar.update_layout(template="plotly_white", width=800, height=400)
     
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t2:
@@ -231,10 +255,10 @@ def generar_reporte_completo_pdf(planta, df_mediciones):
     
     # === PAGINA 3: DISTRIBUCION Y MAPA ===
     pdf.add_page()
-    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("3. Distribución General y Mapa de Calor"), 0, 1, 'L')
+    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("3. Mapa de Calor y Distribución"), 0, 1, 'L')
     
     # Histograma
-    fig_hist = px.histogram(df_proc, x="Amperios", nbins=20, title="Histograma de Corrientes", marginal="box")
+    fig_hist = px.histogram(df_proc, x="Amperios", nbins=20, title="Curva de Distribución (Gauss)", marginal="box")
     fig_hist.update_layout(template="plotly_white", width=800, height=300)
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t3:
         fig_hist.write_image(t3.name, scale=2)
@@ -247,7 +271,7 @@ def generar_reporte_completo_pdf(planta, df_mediciones):
     df_proc['Indice'] = range(len(df_proc))
     
     fig_scat = px.scatter(df_proc, x='Indice', y='Amperios', color='Amperios', 
-                          title="Mapa de Corrientes (Ordenado por Equipo)", color_continuous_scale='RdYlGn')
+                          title="Mapa de Dispersión (Vista Panorámica)", color_continuous_scale='RdYlGn')
     fig_scat.update_layout(template="plotly_white", width=800, height=300)
     
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as t4:
@@ -256,40 +280,40 @@ def generar_reporte_completo_pdf(planta, df_mediciones):
 
     # === PAGINA 4: HALLAZGOS ===
     pdf.add_page()
-    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text("4. Hallazgos Críticos (Desviación > 10%)"), 0, 1, 'L')
+    pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"4. Hallazgos Críticos (Desviación > {int(TOLERANCIA_CRITICA*100)}%)"), 0, 1, 'L')
     pdf.ln(5)
     
-    # Filtro Ovejas Negras
     filtro_problemas = (df_proc['Diagnostico'] == "BAJA CORRIENTE") | (df_proc['Diagnostico'] == "CORTE (0A)")
     df_hallazgos = df_proc[filtro_problemas].sort_values('Desviacion_Pct', ascending=True)
     
-    pdf.set_font("Arial", "B", 10)
-    pdf.set_fill_color(240, 240, 240)
-    headers = ["Equipo", "String ID", "Valor (A)", "Prom. Caja", "Desviacion"]
-    w_cols = [40, 30, 30, 30, 40]
-    
-    for i, h in enumerate(headers):
-        pdf.cell(w_cols[i], 8, clean_text(h), 1, 0, 'C', True)
-    pdf.ln()
-    
-    pdf.set_font("Arial", "", 10)
-    for _, row in df_hallazgos.iterrows():
-        pdf.cell(w_cols[0], 8, clean_text(str(row['Equipo'])), 1)
-        pdf.cell(w_cols[1], 8, clean_text(str(row['String ID'])), 1)
-        pdf.cell(w_cols[2], 8, f"{row['Amperios']:.1f}", 1, 0, 'C')
-        pdf.cell(w_cols[3], 8, f"{row['Promedio_Caja']:.1f}", 1, 0, 'C')
+    if not df_hallazgos.empty:
+        pdf.set_font("Arial", "B", 10)
+        pdf.set_fill_color(240, 240, 240)
+        headers = ["Equipo", "String ID", "Valor (A)", "Prom. Caja", "Desviacion"]
+        w_cols = [40, 30, 30, 30, 40]
         
-        # Color rojo para desviacion
-        pdf.set_text_color(200, 0, 0)
-        pdf.cell(w_cols[4], 8, f"{row['Desviacion_Pct']:.1f}%", 1, 0, 'C')
-        pdf.set_text_color(0)
+        for i, h in enumerate(headers):
+            pdf.cell(w_cols[i], 8, clean_text(h), 1, 0, 'C', True)
         pdf.ln()
+        
+        pdf.set_font("Arial", "", 10)
+        for _, row in df_hallazgos.iterrows():
+            pdf.cell(w_cols[0], 8, clean_text(str(row['Equipo'])), 1)
+            pdf.cell(w_cols[1], 8, clean_text(str(row['String ID'])), 1)
+            pdf.cell(w_cols[2], 8, f"{row['Amperios']:.1f}", 1, 0, 'C')
+            pdf.cell(w_cols[3], 8, f"{row['Promedio_Caja']:.1f}", 1, 0, 'C')
+            pdf.set_text_color(200, 0, 0)
+            pdf.cell(w_cols[4], 8, f"{row['Desviacion_Pct']:.1f}%", 1, 0, 'C')
+            pdf.set_text_color(0)
+            pdf.ln()
+    else:
+        pdf.set_font("Arial", "", 10)
+        pdf.multi_cell(0, 6, clean_text("No se detectaron desviaciones criticas en esta inspeccion."))
         
     return bytes(pdf.output(dest='S'))
 
 
 def crear_pdf_mediciones_caja(planta, equipo, fecha, df_data, kpis, comentarios, fig_box, evidencias):
-    # Version simple para la pestaña de carga manual
     pdf = PDF(); pdf.add_page(); pdf.set_auto_page_break(True, margin=15)
     pdf.set_font("Arial", "B", 12); pdf.cell(0, 10, clean_text(f"REPORTE DE CAMPO (SIMPLE)"), 0, 1, 'C'); pdf.ln(5)
     pdf.set_font("Arial", "", 10); pdf.cell(0, 8, clean_text(f"Planta: {planta} | Equipo: {equipo}"), 0, 1); pdf.cell(0, 8, clean_text(f"Fecha: {fecha}"), 0, 1); pdf.ln(5)
@@ -403,7 +427,6 @@ with t2:
         prom = v_cl.mean(); dev = v_cl.std(); cv = (dev / prom) * 100 if prom > 0 else 0
         cs.metric("Promedio Local", f"{prom:.2f} A")
         
-        # Logica simple (10% tambien aqui)
         def diag_simple(v, p):
             if v == 0: return "CORTE (0A)"
             if v < p * (1 - TOLERANCIA_CRITICA): return "BAJA CORRIENTE"
@@ -468,23 +491,19 @@ with t3:
         else: st.info("Sin datos.")
 
     else:
-        # --- SECCIÓN MEDICIONES: AHORA CON PDF MASTER ---
+        # --- SECCIÓN MEDICIONES V43 ---
         dfm = st.session_state.df_med_cache; dfmp = dfm[dfm['Planta'] == planta_sel].copy()
         
         if not dfmp.empty:
             stt_glob, col_glob, df_processed = generar_diagnostico_mediciones_pro_local(dfmp)
             
             st.markdown("### 🚦 Resumen Ejecutivo (Audit Master)")
-            
             c_kpi, c_btn = st.columns([3, 1])
-            with c_kpi:
-                st.caption(f"Tolerancia Crítica Aplicada: {int(TOLERANCIA_CRITICA*100)}%")
+            with c_kpi: st.caption(f"Tolerancia Crítica Aplicada: {int(TOLERANCIA_CRITICA*100)}%")
             with c_btn:
-                # BOTON DE GENERACION DEL REPORTE COMPLETO
                 pdf_bytes = generar_reporte_completo_pdf(planta_sel, dfmp)
-                st.download_button("📄 GENERAR INFORME COMPLETO (PDF)", pdf_bytes, f"Informe_Auditoria_{planta_sel}.pdf", type="primary")
+                st.download_button("📄 GENERAR INFORME PDF", pdf_bytes, f"Informe_Auditoria_{planta_sel}.pdf", type="primary")
 
-            # Dashboard en pantalla (igual a V40)
             tot_strings = len(df_processed)
             tot_criticos = len(df_processed[df_processed['Diagnostico'] == "CORTE (0A)"])
             tot_bajos = len(df_processed[df_processed['Diagnostico'] == "BAJA CORRIENTE"])
@@ -497,20 +516,40 @@ with t3:
             k4.metric("Desviación > 10%", tot_bajos, delta_color="inverse")
             
             st.divider()
-            g1, g2 = st.columns([1, 2])
-            with g1:
-                fig_don = px.pie(df_processed, names='Diagnostico', title="Estado General", 
-                                 color='Diagnostico',
-                                 color_discrete_map={'NORMAL': '#2ecc71', 'CORTE (0A)': '#e74c3c', 'BAJA CORRIENTE': '#f39c12', 'SOBRECORRIENTE': '#8e44ad'}, hole=0.5)
-                st.plotly_chart(fig_don, use_container_width=True)
-            with g2:
-                filtro_problemas = (df_processed['Diagnostico'] == "BAJA CORRIENTE") | (df_processed['Diagnostico'] == "CORTE (0A)")
-                df_bajos = df_processed[filtro_problemas].sort_values('Amperios', ascending=True).head(15)
-                if not df_bajos.empty:
-                    df_bajos['ID_Full'] = df_bajos['Equipo'] + " : " + df_bajos['String ID']
-                    fig_bar = px.bar(df_bajos, x='Amperios', y='ID_Full', orientation='h', title="Top 15: Strings con Peor Desempeño", color='Diagnostico', color_discrete_map={'CORTE (0A)': '#e74c3c', 'BAJA CORRIENTE': '#f39c12'})
-                    st.plotly_chart(fig_bar, use_container_width=True)
-                else: st.success("Sin anomalías graves.")
+            
+            st.subheader("1. Dispersión por Caja (Boxplot)")
+            fig_box = px.box(df_processed, x='Equipo', y='Amperios', points="outliers", color="Equipo", title="Distribución de Corriente por Combiner Box")
+            fig_box.update_layout(showlegend=False, height=450)
+            st.plotly_chart(fig_box, use_container_width=True)
+            
+            c_hist, c_scat = st.columns(2)
+            with c_hist:
+                st.subheader("2. Histograma (Gauss)")
+                fig_hist = px.histogram(df_processed, x="Amperios", nbins=20, title="Distribución de Frecuencias", marginal="box")
+                st.plotly_chart(fig_hist, use_container_width=True)
+                
+            with c_scat:
+                st.subheader("3. Mapa de Strings")
+                df_processed = df_processed.sort_values(['Equipo', 'String ID'])
+                df_processed['Indice'] = range(len(df_processed))
+                
+                fig_scat = px.scatter(df_processed, 
+                                      x='Indice', 
+                                      y='Amperios', 
+                                      color='Amperios', 
+                                      title="Mapa de Dispersión (Ordenado)", 
+                                      color_continuous_scale='RdYlGn',
+                                      hover_data=['Equipo', 'String ID'])
+                st.plotly_chart(fig_scat, use_container_width=True)
+
+            st.subheader("4. Top Strings con Desviación")
+            filtro_problemas = (df_processed['Diagnostico'] == "BAJA CORRIENTE") | (df_processed['Diagnostico'] == "CORTE (0A)")
+            df_bajos = df_processed[filtro_problemas].sort_values('Amperios', ascending=True).head(15)
+            if not df_bajos.empty:
+                df_bajos['ID_Full'] = df_bajos['Equipo'] + " : " + df_bajos['String ID']
+                fig_bar = px.bar(df_bajos, x='Amperios', y='ID_Full', orientation='h', color='Diagnostico', color_discrete_map={'CORTE (0A)': '#e74c3c', 'BAJA CORRIENTE': '#f39c12'})
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else: st.success("Sin anomalías graves.")
 
             with st.expander("Ver Base de Datos Completa"):
                 st.dataframe(df_processed, use_container_width=True)
@@ -518,7 +557,6 @@ with t3:
             st.warning("Sin mediciones registradas.")
 
 with t4:
-    # (Diagnostico igual)
     st.header("🔍 Diagnóstico Técnico Avanzado")
     df = st.session_state.df_cache; df_d = df[df['Planta'] == planta_sel].copy()
     if not df_d.empty:
